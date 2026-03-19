@@ -1,0 +1,64 @@
+package validation
+
+import (
+	"log/slog"
+
+	"github.com/srl-labs/raven/internal/routetable"
+	"github.com/srl-labs/raven/internal/rtr/store"
+	"github.com/srl-labs/raven/internal/types"
+	"github.com/srl-labs/raven/internal/validation/rov"
+)
+
+// Engine annotates routes with ROV (and later ASPA) validation results.
+type Engine struct {
+	rovAnnotator *rov.Annotator
+	vrpStore     *store.VRPStore
+	table        *routetable.Table
+	log          *slog.Logger
+}
+
+// NewEngine creates a validation engine.
+func NewEngine(vrpStore *store.VRPStore, table *routetable.Table, log *slog.Logger) *Engine {
+	return &Engine{
+		rovAnnotator: rov.NewAnnotator(vrpStore),
+		vrpStore:     vrpStore,
+		table:        table,
+		log:          log.With("subsystem", "validation"),
+	}
+}
+
+// ValidateRoute performs ROV on a single route and updates its annotations.
+// Called by the ingest pipeline for each new route.
+func (e *Engine) ValidateRoute(route *types.Route) {
+	// ROV
+	route.ROV = e.rovAnnotator.Validate(route)
+
+	// ASPA is Phase 2 — for now ASPA is Unknown
+	route.ASPA = types.ASPAResult{
+		State: types.ASPAUnknown,
+	}
+
+	// Compute combined security posture
+	route.SecurityPosture = types.ComputePosture(route.ROV.State, route.ASPA.State)
+}
+
+// RevalidateAll re-runs validation on every route in the table.
+// Called when the VRP store is updated (RTR cache sync).
+func (e *Engine) RevalidateAll() {
+	routes := e.table.All()
+	e.log.Info("re-validating all routes", "count", len(routes))
+
+	var changed int
+	for _, route := range routes {
+		oldPosture := route.SecurityPosture
+		e.ValidateRoute(route)
+
+		if route.SecurityPosture != oldPosture {
+			changed++
+			// Update posture index in the route table
+			e.table.Insert(route)
+		}
+	}
+
+	e.log.Info("re-validation complete", "total", len(routes), "posture_changes", changed)
+}

@@ -1,0 +1,22 @@
+bmp:
+  listen: "0.0.0.0:11019"
+
+rtr:
+  caches:
+    - address: "localhost:3323"
+      preference: 1
+      transport: tcp
+
+validation:
+  rov: true
+  aspa: true
+  aspa-default-procedure: upstream
+
+outputs:
+  prometheus:
+    listen: ":9595"
+    path: "/metrics"
+
+logging:
+  level: info
+  format: json

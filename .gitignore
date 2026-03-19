@@ -1,0 +1,18 @@
+# Binaries
+/raven
+/dist/
+*.exe
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Generated protobuf
+/gen/

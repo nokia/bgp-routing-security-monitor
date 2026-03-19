@@ -1,0 +1,101 @@
+{
+  "name": "raven-demo",
+  "type": "clab",
+  "clab": {
+    "config": {
+      "prefix": "clab",
+      "mgmt": {
+        "network": "clab",
+        "bridge": "br-7c79ade7e734",
+        "ipv4-subnet": "172.20.20.0/24",
+        "ipv4-gw": "172.20.20.1",
+        "ipv6-subnet": "3fff:172:20:20::/64",
+        "ipv6-gw": "3fff:172:20:20::1",
+        "external-access": true
+      }
+    }
+  },
+  "ssh-pub-keys": [],
+  "nodes": {
+    "edge": {
+      "index": "0",
+      "shortname": "edge",
+      "longname": "clab-raven-demo-edge",
+      "fqdn": "edge.raven-demo.io",
+      "group": "",
+      "labdir": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/clab-raven-demo/edge",
+      "kind": "linux",
+      "image": "quay.io/frrouting/frr:10.2.5",
+      "mgmt-net": "",
+      "mgmt-intf": "",
+      "mgmt-ipv4-address": "172.20.20.3",
+      "mgmt-ipv4-prefix-length": 24,
+      "mgmt-ipv6-address": "3fff:172:20:20::3",
+      "mgmt-ipv6-prefix-length": 64,
+      "mac-address": "",
+      "labels": {
+        "clab-mgmt-net-bridge": "br-7c79ade7e734",
+        "clab-node-group": "",
+        "clab-node-kind": "linux",
+        "clab-node-lab-dir": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/clab-raven-demo/edge",
+        "clab-node-longname": "clab-raven-demo-edge",
+        "clab-node-name": "edge",
+        "clab-node-type": "",
+        "clab-owner": "ritmukhe",
+        "clab-topo-file": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/raven-demo.clab.yaml",
+        "containerlab": "raven-demo"
+      },
+      "port-bindings": [
+      ]
+    },
+    "upstream": {
+      "index": "1",
+      "shortname": "upstream",
+      "longname": "clab-raven-demo-upstream",
+      "fqdn": "upstream.raven-demo.io",
+      "group": "",
+      "labdir": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/clab-raven-demo/upstream",
+      "kind": "linux",
+      "image": "quay.io/frrouting/frr:10.2.5",
+      "mgmt-net": "",
+      "mgmt-intf": "",
+      "mgmt-ipv4-address": "172.20.20.2",
+      "mgmt-ipv4-prefix-length": 24,
+      "mgmt-ipv6-address": "3fff:172:20:20::2",
+      "mgmt-ipv6-prefix-length": 64,
+      "mac-address": "",
+      "labels": {
+        "clab-mgmt-net-bridge": "br-7c79ade7e734",
+        "clab-node-group": "",
+        "clab-node-kind": "linux",
+        "clab-node-lab-dir": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/clab-raven-demo/upstream",
+        "clab-node-longname": "clab-raven-demo-upstream",
+        "clab-node-name": "upstream",
+        "clab-node-type": "",
+        "clab-owner": "ritmukhe",
+        "clab-topo-file": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/raven-demo.clab.yaml",
+        "containerlab": "raven-demo"
+      },
+      "port-bindings": [
+      ]
+    }
+  },
+  "links": [
+    {
+      "endpoints": {
+        "a": {
+          "node": "upstream",
+          "interface": "eth1",
+          "mac": "aa:c1:ab:81:03:94",
+          "peer": "z"
+        },
+        "z": {
+          "node": "edge",
+          "interface": "eth1",
+          "mac": "aa:c1:ab:96:48:c9",
+          "peer": "a"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,152 @@
+syntax = "proto3";
+
+package raven.v1;
+
+option go_package = "github.com/srl-labs/raven/gen/raven/v1;ravenv1";
+
+// ─── Services ───
+
+service RouteService {
+  // Query routes from the route table with optional filters.
+  rpc ListRoutes(ListRoutesRequest) returns (ListRoutesResponse);
+
+  // One-shot validation of a prefix against current RPKI state.
+  rpc ValidatePrefix(ValidatePrefixRequest) returns (ValidatePrefixResponse);
+
+  // Stream validation state changes in real time.
+  rpc WatchRoutes(WatchRoutesRequest) returns (stream WatchRoutesResponse);
+}
+
+service StatusService {
+  // System health: BMP peers, RTR caches, uptime.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // List all BMP peers with session metadata.
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+}
+
+// ─── Route Messages ───
+
+message RouteFilter {
+  string prefix = 1;           // e.g. "1.0.0.0/24" — empty means no filter
+  uint32 origin_asn = 2;       // 0 means no filter
+  string peer = 3;             // peer address — empty means no filter
+  string posture = 4;          // security posture filter — empty means no filter
+  string afi = 5;              // "ipv4", "ipv6" — empty means both
+}
+
+message RouteEntry {
+  string prefix = 1;
+  string peer_addr = 2;
+  uint32 peer_asn = 3;
+  repeated uint32 as_path = 4;
+  uint32 origin_asn = 5;
+  string next_hop = 6;
+  string rov_state = 7;        // "Valid", "Invalid", "NotFound"
+  string aspa_state = 8;       // "Valid", "Invalid", "Unknown", "Unverifiable"
+  string security_posture = 9; // "secured", "origin-only", etc.
+  string rov_reason = 10;
+  repeated VRPEntry matched_vrps = 11;
+  ASPADetail aspa_detail = 12;
+  int64 timestamp_unix = 13;
+}
+
+message VRPEntry {
+  string prefix = 1;
+  uint32 asn = 2;
+  uint32 max_length = 3;
+}
+
+message ASPADetail {
+  string procedure = 1;        // "upstream" or "downstream"
+  repeated ASPAHopEntry hops = 2;
+}
+
+message ASPAHopEntry {
+  uint32 customer_asn = 1;
+  uint32 provider_asn = 2;
+  string authorization = 3;    // "Authorized", "NotAuthorized", "NoASPA", "Skipped"
+}
+
+// ─── ListRoutes ───
+
+message ListRoutesRequest {
+  RouteFilter filter = 1;
+  string format = 2;          // "table", "json", "wide" — server hint for response detail
+}
+
+message ListRoutesResponse {
+  repeated RouteEntry routes = 1;
+  uint64 total_count = 2;
+}
+
+// ─── ValidatePrefix ───
+
+message ValidatePrefixRequest {
+  string prefix = 1;
+  uint32 origin_asn = 2;
+  // For one-shot mode (no daemon): connect to this RTR cache directly
+  string rtr_address = 3;
+}
+
+message ValidatePrefixResponse {
+  RouteEntry result = 1;
+}
+
+// ─── WatchRoutes ───
+
+message WatchRoutesRequest {
+  RouteFilter filter = 1;
+}
+
+message WatchRoutesResponse {
+  RouteEntry route = 1;
+  string change_type = 2;     // "new", "update", "withdraw"
+  string previous_posture = 3; // for updates: what the posture was before
+}
+
+// ─── Status ───
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  string version = 1;
+  int64 uptime_seconds = 2;
+  repeated BMPPeerStatus bmp_peers = 3;
+  repeated RTRCacheStatus rtr_caches = 4;
+  RouteTableStats route_table = 5;
+}
+
+message BMPPeerStatus {
+  string address = 1;
+  uint32 asn = 2;
+  string router_id = 3;
+  string state = 4;            // "up", "down"
+  uint64 route_count = 5;
+  int64 uptime_seconds = 6;
+  int64 last_message_unix = 7;
+}
+
+message RTRCacheStatus {
+  string address = 1;
+  string state = 2;            // "connected", "disconnected", "syncing"
+  uint32 protocol_version = 3; // 1 or 2
+  uint64 vrp_count = 4;
+  uint64 aspa_count = 5;
+  uint32 serial = 6;
+  int64 last_sync_unix = 7;
+}
+
+message RouteTableStats {
+  uint64 total_routes = 1;
+  map<string, uint64> routes_by_posture = 2; // posture → count
+  map<string, uint64> routes_by_afi = 3;     // "ipv4"/"ipv6" → count
+}
+
+// ─── ListPeers ───
+
+message ListPeersRequest {}
+
+message ListPeersResponse {
+  repeated BMPPeerStatus peers = 1;
+}

@@ -87,20 +87,57 @@ func (l *Listener) GetPeers() []Peer {
 // handleSession processes a single BMP session (one TCP connection = one router).
 func (l *Listener) handleSession(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-
 	remoteAddr := conn.RemoteAddr().String()
 	routerAddr, _ := netip.ParseAddrPort(remoteAddr)
 	sessionLog := l.log.With("router", remoteAddr)
-
 	sessionLog.Info("BMP session started")
-	defer sessionLog.Info("BMP session ended")
+
+	defer func() {
+		sessionLog.Info("BMP session ended")
+		// Withdraw all routes from all peers of this router
+		l.peerMu.RLock()
+		var peerAddrs []netip.Addr
+		for key := range l.peers {
+			if key.RouterAddr == routerAddr.Addr() {
+				peerAddrs = append(peerAddrs, key.PeerAddr)
+			}
+		}
+		l.peerMu.RUnlock()
+
+		for _, peerAddr := range peerAddrs {
+			select {
+			case l.withdrawCh <- types.Withdrawal{
+				PeerAddr:    peerAddr,
+				WithdrawAll: true,
+			}:
+			default:
+			}
+		}
+
+		// Clean up peers for this router
+		l.peerMu.Lock()
+		for key := range l.peers {
+			if key.RouterAddr == routerAddr.Addr() {
+				delete(l.peers, key)
+			}
+		}
+		l.peerMu.Unlock()
+
+		// Clean up router state
+		l.routerMu.Lock()
+		sysName := l.routers[routerAddr.Addr()]
+		delete(l.routers, routerAddr.Addr())
+		l.routerMu.Unlock()
+		if sysName == "" {
+			sysName = remoteAddr
+		}
+		metrics.BMPSessionState.WithLabelValues(sysName).Set(0)
+	}()
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-
-		// Read the 6-byte common header first
 		hdrBuf := make([]byte, CommonHeaderLen)
 		if _, err := io.ReadFull(conn, hdrBuf); err != nil {
 			if ctx.Err() != nil {
@@ -109,20 +146,16 @@ func (l *Listener) handleSession(ctx context.Context, conn net.Conn) {
 			sessionLog.Error("failed to read BMP header", "error", err)
 			return
 		}
-
 		hdr, err := ParseCommonHeader(hdrBuf)
 		if err != nil {
 			sessionLog.Error("invalid BMP header", "error", err)
 			return
 		}
-
-		// Read the rest of the message
 		bodyLen := int(hdr.Length) - CommonHeaderLen
 		if bodyLen < 0 {
 			sessionLog.Error("invalid BMP message length", "length", hdr.Length)
 			return
 		}
-
 		body := make([]byte, bodyLen)
 		if bodyLen > 0 {
 			if _, err := io.ReadFull(conn, body); err != nil {
@@ -130,7 +163,6 @@ func (l *Listener) handleSession(ctx context.Context, conn net.Conn) {
 				return
 			}
 		}
-
 		l.processMessage(ctx, sessionLog, routerAddr.Addr(), hdr, body)
 	}
 }
@@ -215,6 +247,14 @@ func (l *Listener) processMessage(
 		metrics.BMPPeerState.WithLabelValues(sysName, pd.PerPeer.PeerAddr.String()).Set(0)
 		metrics.BMPMessagesTotal.WithLabelValues(sysName, "peer_down").Inc()
 		log.Info("BMP peer down", "peer", pd.PerPeer.PeerAddr, "reason", pd.Reason)
+		// Signal withdrawal of all routes from this peer
+		select {
+		case l.withdrawCh <- types.Withdrawal{
+			PeerAddr:    pd.PerPeer.PeerAddr,
+			WithdrawAll: true,
+		}:
+		default:
+		}
 
 	case MsgTypeRouteMonitoring:
 		l.routerMu.RLock()

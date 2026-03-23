@@ -8,6 +8,8 @@ all:
     linux:
       hosts:
         clab-raven-demo-edge:
+          ansible_host: 172.20.20.4
+        clab-raven-demo-internet:
           ansible_host: 172.20.20.3
         clab-raven-demo-upstream:
           ansible_host: 172.20.20.2

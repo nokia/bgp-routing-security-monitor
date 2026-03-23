@@ -25,16 +25,17 @@ import (
 
 // Server is the top-level RAVEN daemon that owns all subsystems.
 type Server struct {
-	cfg       *config.Config
-	log       *slog.Logger
-	table     *routetable.Table
-	bmpListen *bmp.Listener
-	vrpStore  *store.VRPStore
-	engine    *validation.Engine
-	routeCh   chan types.Route
-	demoMode  bool
-	apiSrv    *api.Server
-	rtrReady  chan struct{}
+	cfg        *config.Config
+	log        *slog.Logger
+	table      *routetable.Table
+	bmpListen  *bmp.Listener
+	vrpStore   *store.VRPStore
+	aspaStore  *store.ASPAStore
+	engine     *validation.Engine
+	routeCh    chan types.Route
+	demoMode   bool
+	apiSrv     *api.Server
+	rtrReady   chan struct{}
 	withdrawCh chan types.Withdrawal
 }
 
@@ -42,19 +43,20 @@ type Server struct {
 func New(cfg *config.Config, log *slog.Logger) *Server {
 	routeCh := make(chan types.Route, 100_000)
 	vrpStore := store.NewVRPStore()
+	aspaStore := store.NewASPAStore()
 	table := routetable.New()
-	engine := validation.NewEngine(vrpStore, table, log)
+	engine := validation.NewEngine(vrpStore, aspaStore, table, log)
 	withdrawCh := make(chan types.Withdrawal, 10_000)
-
 	srv := &Server{
-		cfg:       cfg,
-		log:       log,
-		table:     table,
-		bmpListen: bmp.NewListener(cfg.BMP.Listen, routeCh, withdrawCh, log),
-		vrpStore:  vrpStore,
-		engine:    engine,
-		routeCh:   routeCh,
-		rtrReady: make(chan struct{}),
+		cfg:        cfg,
+		log:        log,
+		table:      table,
+		bmpListen:  bmp.NewListener(cfg.BMP.Listen, routeCh, withdrawCh, log),
+		vrpStore:   vrpStore,
+		aspaStore:  aspaStore,
+		engine:     engine,
+		routeCh:    routeCh,
+		rtrReady:   make(chan struct{}),
 		withdrawCh: withdrawCh,
 	}
 	srv.apiSrv = api.NewServer(table, srv.bmpListen, vrpStore, log, "dev")
@@ -107,7 +109,7 @@ func (s *Server) Run() error {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				client := rtr.NewClient(cache.Address, s.vrpStore, s.log)
+				client := rtr.NewClient(cache.Address, s.vrpStore, s.aspaStore, s.log)
 				client.SetOnUpdate(func() {
 					s.engine.RevalidateAll()
 				})
@@ -177,7 +179,11 @@ func (s *Server) withdrawIngestLoop(ctx context.Context) {
 	for {
 		select {
 		case w := <-s.withdrawCh:
-			s.table.Withdraw(w.PeerAddr, w.Prefix)
+			if w.WithdrawAll {
+				s.table.WithdrawAllFromPeer(w.PeerAddr)
+			} else {
+				s.table.Withdraw(w.PeerAddr, w.Prefix)
+			}
 		case <-ctx.Done():
 			return
 		}

@@ -32,9 +32,10 @@ type Route struct {
 
 // Withdrawal represents a BGP route withdrawal received via BMP.
 type Withdrawal struct {
-	PeerAddr netip.Addr
-	Prefix   netip.Prefix
-	RIBType  RIBType
+	PeerAddr    netip.Addr
+	Prefix      netip.Prefix
+	RIBType     RIBType
+	WithdrawAll bool // if true, withdraw all routes from PeerAddr
 }
 
 // OriginASN returns the last ASN in the AS_PATH (the route originator).

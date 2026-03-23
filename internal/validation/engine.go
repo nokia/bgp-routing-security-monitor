@@ -2,28 +2,30 @@ package validation
 
 import (
 	"log/slog"
-
 	"github.com/srl-labs/raven/internal/routetable"
 	"github.com/srl-labs/raven/internal/rtr/store"
 	"github.com/srl-labs/raven/internal/types"
+	"github.com/srl-labs/raven/internal/validation/aspa"
 	"github.com/srl-labs/raven/internal/validation/rov"
 )
 
 // Engine annotates routes with ROV (and later ASPA) validation results.
 type Engine struct {
-	rovAnnotator *rov.Annotator
-	vrpStore     *store.VRPStore
-	table        *routetable.Table
-	log          *slog.Logger
+	rovAnnotator  *rov.Annotator
+	aspaAnnotator *aspa.Annotator
+	vrpStore      *store.VRPStore
+	table         *routetable.Table
+	log           *slog.Logger
 }
 
 // NewEngine creates a validation engine.
-func NewEngine(vrpStore *store.VRPStore, table *routetable.Table, log *slog.Logger) *Engine {
+func NewEngine(vrpStore *store.VRPStore, aspaStore *store.ASPAStore, table *routetable.Table, log *slog.Logger) *Engine {
 	return &Engine{
-		rovAnnotator: rov.NewAnnotator(vrpStore),
-		vrpStore:     vrpStore,
-		table:        table,
-		log:          log.With("subsystem", "validation"),
+		rovAnnotator:  rov.NewAnnotator(vrpStore),
+		aspaAnnotator: aspa.NewAnnotator(aspaStore),
+		vrpStore:      vrpStore,
+		table:         table,
+		log:           log.With("subsystem", "validation"),
 	}
 }
 
@@ -32,13 +34,9 @@ func NewEngine(vrpStore *store.VRPStore, table *routetable.Table, log *slog.Logg
 func (e *Engine) ValidateRoute(route *types.Route) {
 	// ROV
 	route.ROV = e.rovAnnotator.Validate(route)
-
-	// ASPA is Phase 2 — for now ASPA is Unknown
-	route.ASPA = types.ASPAResult{
-		State: types.ASPAUnknown,
-	}
-
-	// Compute combined security posture
+	// ASPA
+	route.ASPA = e.aspaAnnotator.Validate(route)
+	// Combined posture
 	route.SecurityPosture = types.ComputePosture(route.ROV.State, route.ASPA.State)
 }
 

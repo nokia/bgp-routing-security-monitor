@@ -28,6 +28,7 @@ const (
 	PDUEndOfData     uint8 = 7
 	PDUCacheReset    uint8 = 8
 	PDUErrorReport   uint8 = 10
+	PDUASPA          uint8 = 11 // RTR v2 (draft-ietf-sidrops-8210bis)
 )
 
 // RTR header is 8 bytes: version(1) + type(1) + sessionID(2) + length(4)
@@ -37,25 +38,27 @@ const rtrHeaderLen = 8
 type Client struct {
 	address      string
 	vrpStore     *store.VRPStore
+	aspaStore    *store.ASPAStore
 	log          *slog.Logger
 	retryMin     time.Duration
 	retryMax     time.Duration
 	hasReset     bool
-	protoVersion uint8 // RTR protocol version (0 or 1)
+	protoVersion uint8 // RTR protocol version (0, 1, or 2)
 	onUpdate     func()
 	readyOnce    sync.Once
 	ready        chan struct{}
 }
 
 // NewClient creates an RTR client that syncs VRPs into the given store.
-func NewClient(address string, vrpStore *store.VRPStore, log *slog.Logger) *Client {
+func NewClient(address string, vrpStore *store.VRPStore, aspaStore *store.ASPAStore, log *slog.Logger) *Client {
 	return &Client{
 		address:      address,
 		vrpStore:     vrpStore,
+		aspaStore:    aspaStore,
 		log:          log.With("subsystem", "rtr", "cache", address),
 		retryMin:     5 * time.Second,
 		retryMax:     60 * time.Second,
-		protoVersion: 1,
+		protoVersion: 2,
 		ready:        make(chan struct{}),
 	}
 }
@@ -165,6 +168,22 @@ func (c *Client) runSession(ctx context.Context) error {
 			} else {
 				c.vrpStore.AddVRP(vrp)
 			}
+			
+		case PDUASPA:
+		customerASN, providerASNs, withdraw, err := c.parseASPAPDU(sessionID, payload)
+		if err != nil {
+			c.log.Error("bad ASPA PDU", "error", err)
+			continue
+		}
+		if withdraw {
+			for _, p := range providerASNs {
+				c.aspaStore.RemoveProvider(customerASN, p)
+			}
+		} else {
+			for _, p := range providerASNs {
+				c.aspaStore.AddProvider(customerASN, p)
+			}
+		}
 
 		case PDUEndOfData:
 			serial, err := c.parseEndOfData(payload)
@@ -178,6 +197,7 @@ func (c *Client) runSession(ctx context.Context) error {
 			metrics.RTRLastSync.WithLabelValues(c.address).Set(float64(time.Now().Unix()))
 			c.log.Info("RTR sync complete",
 				"vrp_count", c.vrpStore.Count(),
+				"aspa_count", c.aspaStore.Count(),
 				"serial", serial,
 				"session_id", sessionID,
 			)
@@ -210,8 +230,12 @@ func (c *Client) runSession(ctx context.Context) error {
 			errMsg := c.parseErrorReport(payload)
 			c.log.Error("RTR error report from cache", "error_text", errMsg)
 
-			// If we got an error on version 1, fall back to version 0
-			if c.protoVersion == 1 {
+			// Version negotiation fallback: 2 → 1 → 0
+			if c.protoVersion == 2 {
+				c.log.Info("falling back to RTR protocol version 1")
+				c.protoVersion = 1
+				return fmt.Errorf("cache sent error report (trying version 1): %s", errMsg)
+			} else if c.protoVersion == 1 {
 				c.log.Info("falling back to RTR protocol version 0")
 				c.protoVersion = 0
 				return fmt.Errorf("cache sent error report (trying version 0): %s", errMsg)
@@ -244,6 +268,31 @@ func (c *Client) readPDU(r *bufio.Reader) (pduType uint8, sessionID uint16, payl
 		}
 	}
 	return pduType, sessionID, payload, nil
+}
+
+// parseASPAPDU parses an ASPA PDU (type 11) from RTR v2.
+// Format per draft-ietf-sidrops-8210bis:
+//   Flags (1) | AFI Flags (1) | Customer ASN (4) | Provider AS Count (2) | Provider ASNs (4 each)
+func (c *Client) parseASPAPDU(sessionID uint16, data []byte) (customerASN uint32, providerASNs []uint32, withdraw bool, err error) {
+	flags := uint8(sessionID >> 8)
+	withdraw = flags&0x01 == 0
+
+	if len(data) < 4 {
+		return 0, nil, false, fmt.Errorf("ASPA PDU too short: %d", len(data))
+	}
+	customerASN = binary.BigEndian.Uint32(data[0:4])
+
+	// No explicit provider count — derive from remaining payload length
+	remaining := len(data) - 4
+	if remaining%4 != 0 {
+		return 0, nil, false, fmt.Errorf("ASPA PDU malformed: %d extra bytes after customerASN", remaining)
+	}
+	providerCount := remaining / 4
+	providerASNs = make([]uint32, providerCount)
+	for i := 0; i < providerCount; i++ {
+		providerASNs[i] = binary.BigEndian.Uint32(data[4+i*4 : 8+i*4])
+	}
+	return customerASN, providerASNs, withdraw, nil
 }
 
 // sendResetQuery sends an RTR Reset Query PDU.

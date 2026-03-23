@@ -1,17 +1,15 @@
-# RAVEN Demo Lab
-#
-#   upstream (FRR, AS65000) ──eBGP── edge (FRR, AS65001)
-#       │                                │
-#       └──────────BMP──────────────────▶ RAVEN (host) ◀── RTR ── Routinator (Docker)
-#                                         ▲
-#                  BMP────────────────────┘
-#
-# Routinator runs as a standalone Docker container (not managed by containerlab)
-
 name: raven-demo
 
 topology:
   nodes:
+    internet:
+      kind: linux
+      image: quay.io/frrouting/frr:10.2.5
+      binds:
+        - configs/internet/daemons:/etc/frr/daemons
+        - configs/internet/frr.conf:/etc/frr/frr.conf
+        - configs/internet/vtysh.conf:/etc/frr/vtysh.conf
+
     upstream:
       kind: linux
       image: quay.io/frrouting/frr:10.2.5
@@ -29,4 +27,5 @@ topology:
         - configs/edge/vtysh.conf:/etc/frr/vtysh.conf
 
   links:
-    - endpoints: ["upstream:eth1", "edge:eth1"]
+    - endpoints: ["internet:eth1", "upstream:eth1"]
+    - endpoints: ["upstream:eth2", "edge:eth1"]

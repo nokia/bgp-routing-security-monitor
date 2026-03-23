@@ -3,6 +3,11 @@ edge:
     username: 
     password: 
     platform: linux
+    hostname: 172.20.20.4
+internet:
+    username: 
+    password: 
+    platform: linux
     hostname: 172.20.20.3
 upstream:
     username: 

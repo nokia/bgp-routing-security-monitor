@@ -18,3 +18,4 @@ vendor/
 /gen/
 # Containerlab generated files
 lab/clab-raven-demo/
+raven-phase2b-install.sh

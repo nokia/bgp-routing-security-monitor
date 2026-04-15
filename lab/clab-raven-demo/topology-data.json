@@ -6,7 +6,7 @@
       "prefix": "clab",
       "mgmt": {
         "network": "clab",
-        "bridge": "br-8ae3d424d619",
+        "bridge": "br-9954c889beef",
         "ipv4-subnet": "172.20.20.0/24",
         "ipv4-gw": "172.20.20.1",
         "ipv6-subnet": "3fff:172:20:20::/64",
@@ -34,7 +34,7 @@
       "mgmt-ipv6-prefix-length": 64,
       "mac-address": "",
       "labels": {
-        "clab-mgmt-net-bridge": "br-8ae3d424d619",
+        "clab-mgmt-net-bridge": "br-9954c889beef",
         "clab-node-group": "",
         "clab-node-kind": "linux",
         "clab-node-lab-dir": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/clab-raven-demo/edge",
@@ -59,13 +59,13 @@
       "image": "quay.io/frrouting/frr:10.2.5",
       "mgmt-net": "",
       "mgmt-intf": "",
-      "mgmt-ipv4-address": "172.20.20.3",
+      "mgmt-ipv4-address": "172.20.20.2",
       "mgmt-ipv4-prefix-length": 24,
-      "mgmt-ipv6-address": "3fff:172:20:20::3",
+      "mgmt-ipv6-address": "3fff:172:20:20::2",
       "mgmt-ipv6-prefix-length": 64,
       "mac-address": "",
       "labels": {
-        "clab-mgmt-net-bridge": "br-8ae3d424d619",
+        "clab-mgmt-net-bridge": "br-9954c889beef",
         "clab-node-group": "",
         "clab-node-kind": "linux",
         "clab-node-lab-dir": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/clab-raven-demo/internet",
@@ -90,13 +90,13 @@
       "image": "quay.io/frrouting/frr:10.2.5",
       "mgmt-net": "",
       "mgmt-intf": "",
-      "mgmt-ipv4-address": "172.20.20.2",
+      "mgmt-ipv4-address": "172.20.20.3",
       "mgmt-ipv4-prefix-length": 24,
-      "mgmt-ipv6-address": "3fff:172:20:20::2",
+      "mgmt-ipv6-address": "3fff:172:20:20::3",
       "mgmt-ipv6-prefix-length": 64,
       "mac-address": "",
       "labels": {
-        "clab-mgmt-net-bridge": "br-8ae3d424d619",
+        "clab-mgmt-net-bridge": "br-9954c889beef",
         "clab-node-group": "",
         "clab-node-kind": "linux",
         "clab-node-lab-dir": "/mnt/c/Users/ritmukhe/Documents/Raven/Code/raven/lab/clab-raven-demo/upstream",
@@ -117,13 +117,13 @@
         "a": {
           "node": "internet",
           "interface": "eth1",
-          "mac": "aa:c1:ab:70:54:6c",
+          "mac": "aa:c1:ab:55:06:9d",
           "peer": "z"
         },
         "z": {
           "node": "upstream",
           "interface": "eth1",
-          "mac": "aa:c1:ab:75:ff:c5",
+          "mac": "aa:c1:ab:4a:c3:de",
           "peer": "a"
         }
       }
@@ -133,13 +133,13 @@
         "a": {
           "node": "upstream",
           "interface": "eth2",
-          "mac": "aa:c1:ab:1a:af:1d",
+          "mac": "aa:c1:ab:77:0c:92",
           "peer": "z"
         },
         "z": {
           "node": "edge",
           "interface": "eth1",
-          "mac": "aa:c1:ab:f8:de:51",
+          "mac": "aa:c1:ab:6c:ef:2e",
           "peer": "a"
         }
       }

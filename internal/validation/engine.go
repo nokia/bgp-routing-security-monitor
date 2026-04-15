@@ -2,11 +2,11 @@ package validation
 
 import (
 	"log/slog"
-	"github.com/srl-labs/raven/internal/routetable"
-	"github.com/srl-labs/raven/internal/rtr/store"
-	"github.com/srl-labs/raven/internal/types"
-	"github.com/srl-labs/raven/internal/validation/aspa"
-	"github.com/srl-labs/raven/internal/validation/rov"
+	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia/bgp-routing-security-monitor/internal/validation/aspa"
+	"github.com/nokia/bgp-routing-security-monitor/internal/validation/rov"
 )
 
 // Engine annotates routes with ROV (and later ASPA) validation results.

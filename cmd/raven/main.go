@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/srl-labs/raven/internal/cli"
+	"github.com/nokia/bgp-routing-security-monitor/internal/cli"
 )
 
 func main() {

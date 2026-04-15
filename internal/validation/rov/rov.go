@@ -3,8 +3,8 @@ package rov
 import (
 	"fmt"
 
-	"github.com/srl-labs/raven/internal/rtr/store"
-	"github.com/srl-labs/raven/internal/types"
+	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
 // Annotator performs Route Origin Validation per RFC 6811.

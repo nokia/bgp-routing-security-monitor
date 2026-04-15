@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/srl-labs/raven/internal/bmp"
-	"github.com/srl-labs/raven/internal/routetable"
-	"github.com/srl-labs/raven/internal/rtr/store"
-	"github.com/srl-labs/raven/internal/types"
+	"github.com/nokia/bgp-routing-security-monitor/internal/bmp"
+	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
 // RouteResponse is a single route in API output.
@@ -79,6 +79,7 @@ type Server struct {
 	log       *slog.Logger
 	version   string
 	startTime time.Time
+	mux       *http.ServeMux
 
 	// Watch subscribers
 	watchMu   sync.RWMutex
@@ -87,7 +88,7 @@ type Server struct {
 
 // NewServer creates an API server.
 func NewServer(table *routetable.Table, bmpListen *bmp.Listener, vrpStore *store.VRPStore, log *slog.Logger, version string) *Server {
-	return &Server{
+	s := &Server{
 		table:     table,
 		bmpListen: bmpListen,
 		vrpStore:  vrpStore,
@@ -95,7 +96,13 @@ func NewServer(table *routetable.Table, bmpListen *bmp.Listener, vrpStore *store
 		version:   version,
 		startTime: time.Now(),
 		watchSubs: make(map[chan RouteResponse]struct{}),
+		mux:       http.NewServeMux(),
 	}
+	s.mux.HandleFunc("/api/v1/routes", s.handleRoutes)
+	s.mux.HandleFunc("/api/v1/peers", s.handlePeers)
+	s.mux.HandleFunc("/api/v1/status", s.handleStatus)
+	s.mux.HandleFunc("/api/v1/watch", s.handleWatch)
+	return s
 }
 
 // NotifyRoute sends a route to all watch subscribers.
@@ -112,17 +119,13 @@ func (s *Server) NotifyRoute(route *types.Route) {
 	}
 }
 
+func (s *Server) Mux() *http.ServeMux { return s.mux }
+
 // Start runs the API server. Blocks until ctx is cancelled.
 func (s *Server) Start(ctx context.Context, addr string) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/routes", s.handleRoutes)
-	mux.HandleFunc("/api/v1/peers", s.handlePeers)
-	mux.HandleFunc("/api/v1/status", s.handleStatus)
-	mux.HandleFunc("/api/v1/watch", s.handleWatch)
-
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: mux,
+		Handler: s.mux,
 		BaseContext: func(l net.Listener) context.Context {
 			return ctx
 		},
@@ -296,5 +299,11 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	enc.Encode(v)
+	enc.Encode(v) //nolint:errcheck
+}
+
+func httpError(w http.ResponseWriter, err error, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
 }

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/srl-labs/raven/internal/metrics"
-	"github.com/srl-labs/raven/internal/types"
+	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
 // Listener accepts BMP connections from routers and processes messages.

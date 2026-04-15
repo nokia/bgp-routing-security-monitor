@@ -1,12 +1,14 @@
 package routetable
 
 import (
+	"context"
+	"fmt"
 	"hash/fnv"
 	"net/netip"
 	"sync"
 
 	"github.com/gaissmai/bart"
-	"github.com/srl-labs/raven/internal/types"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
 const defaultShards = 256
@@ -35,6 +37,55 @@ type Table struct {
 type shard struct {
 	mu     sync.RWMutex
 	routes map[types.RouteKey]*types.Route
+}
+
+// Filter holds query parameters for ListRoutes.
+type Filter struct {
+    PeerAddr string
+    Prefix   string
+    OriginASN uint32
+    Posture   string
+    AFI       string // "ipv4" | "ipv6" | ""
+}
+
+// ListRoutes returns routes matching the given filter.
+// Used by the what-if simulator and ASPA recommender.
+func (t *Table) ListRoutes(ctx context.Context, f Filter) ([]types.Route, error) {
+    var ptrs []*types.Route
+
+    switch {
+    case f.PeerAddr != "":
+        addr, err := netip.ParseAddr(f.PeerAddr)
+        if err != nil {
+            return nil, fmt.Errorf("invalid peer addr: %w", err)
+        }
+        ptrs = t.GetByPeer(addr)
+    case f.Prefix != "":
+        p, err := netip.ParsePrefix(f.Prefix)
+        if err != nil {
+            return nil, fmt.Errorf("invalid prefix: %w", err)
+        }
+        ptrs = t.GetByPrefix(p)
+    case f.OriginASN != 0:
+        ptrs = t.GetByOriginASN(f.OriginASN)
+    case f.Posture != "":
+        ptrs = t.GetByPosture(types.SecurityPosture(f.Posture))
+    default:
+        ptrs = t.All()
+    }
+
+    // Apply AFI filter
+    routes := make([]types.Route, 0, len(ptrs))
+    for _, r := range ptrs {
+        if f.AFI == "ipv4" && !r.Prefix.Addr().Is4() {
+            continue
+        }
+        if f.AFI == "ipv6" && !r.Prefix.Addr().Is6() {
+            continue
+        }
+        routes = append(routes, *r)
+    }
+    return routes, nil
 }
 
 // New creates a new Route Table.

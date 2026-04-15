@@ -13,8 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/srl-labs/raven/internal/config"
-	"github.com/srl-labs/raven/internal/server"
+	"github.com/nokia/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia/bgp-routing-security-monitor/internal/server"
 )
 
 // ─── serve ───

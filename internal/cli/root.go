@@ -17,6 +17,7 @@ var (
 )
 
 var cfgFile string
+var addr string
 
 var rootCmd = &cobra.Command{
 	Use:   "raven",
@@ -40,7 +41,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ./raven.yaml)")
 	rootCmd.PersistentFlags().String("log-level", "info", "log level: debug, info, warn, error")
 	rootCmd.PersistentFlags().String("log-format", "json", "log format: json, text")
-	rootCmd.PersistentFlags().String("address", "localhost:11020", "RAVEN daemon address for CLI queries")
+	rootCmd.PersistentFlags().StringVar(&addr, "address", "localhost:11020", "RAVEN daemon address for CLI queries")
 
 	// Bind flags to viper
 	viper.BindPFlag("logging.level", rootCmd.PersistentFlags().Lookup("log-level"))
@@ -54,6 +55,8 @@ func init() {
 	rootCmd.AddCommand(routesCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(watchCmd)
+	rootCmd.AddCommand(newWhatIfCmd(&addr))
+	rootCmd.AddCommand(newASPACmd(&addr))
 }
 
 func initConfig() {

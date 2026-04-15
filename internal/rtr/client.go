@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/srl-labs/raven/internal/metrics"
-	"github.com/srl-labs/raven/internal/rtr/store"
-	"github.com/srl-labs/raven/internal/types"
+	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
+	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
 // RTR PDU types (RFC 8210)
@@ -104,6 +104,13 @@ func (c *Client) Start(ctx context.Context) {
 
 // runSession handles a single RTR connection lifecycle.
 func (c *Client) runSession(ctx context.Context) error {
+	// Reset to the highest supported version on each new session attempt.
+	// Transient errors (e.g. "Running initial validation" during cache startup)
+	// must not permanently downgrade the version across reconnects.
+	// Version negotiation will still fall back within this session if the cache
+	// genuinely rejects v2 with an error report.
+	c.protoVersion = 2
+
 	dialer := net.Dialer{Timeout: 10 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", c.address)
 	if err != nil {
@@ -169,21 +176,21 @@ func (c *Client) runSession(ctx context.Context) error {
 				c.vrpStore.AddVRP(vrp)
 			}
 			
-		case PDUASPA:
-		customerASN, providerASNs, withdraw, err := c.parseASPAPDU(sessionID, payload)
-		if err != nil {
-			c.log.Error("bad ASPA PDU", "error", err)
-			continue
-		}
-		if withdraw {
-			for _, p := range providerASNs {
-				c.aspaStore.RemoveProvider(customerASN, p)
+			case PDUASPA:
+			customerASN, providerASNs, withdraw, err := c.parseASPAPDU(sessionID, payload)
+			if err != nil {
+				c.log.Error("bad ASPA PDU", "error", err)
+				continue
 			}
-		} else {
-			for _, p := range providerASNs {
-				c.aspaStore.AddProvider(customerASN, p)
+			if withdraw {
+				for _, p := range providerASNs {
+					c.aspaStore.RemoveProvider(customerASN, p)
+				}
+			} else {
+				for _, p := range providerASNs {
+					c.aspaStore.AddProvider(customerASN, p)
+				}
 			}
-		}
 
 		case PDUEndOfData:
 			serial, err := c.parseEndOfData(payload)

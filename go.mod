@@ -1,4 +1,4 @@
-module github.com/srl-labs/raven
+module github.com/nokia/bgp-routing-security-monitor
 
 go 1.25.0
 

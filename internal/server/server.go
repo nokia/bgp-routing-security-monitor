@@ -12,15 +12,17 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/srl-labs/raven/internal/api"
-	"github.com/srl-labs/raven/internal/bmp"
-	"github.com/srl-labs/raven/internal/config"
-	"github.com/srl-labs/raven/internal/metrics"
-	"github.com/srl-labs/raven/internal/routetable"
-	"github.com/srl-labs/raven/internal/rtr"
-	"github.com/srl-labs/raven/internal/rtr/store"
-	"github.com/srl-labs/raven/internal/types"
-	"github.com/srl-labs/raven/internal/validation"
+	"github.com/nokia/bgp-routing-security-monitor/internal/api"
+	"github.com/nokia/bgp-routing-security-monitor/internal/aspa/recommender"
+	"github.com/nokia/bgp-routing-security-monitor/internal/bmp"
+	"github.com/nokia/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
+	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia/bgp-routing-security-monitor/internal/rtr"
+	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia/bgp-routing-security-monitor/internal/validation"
+	"github.com/nokia/bgp-routing-security-monitor/internal/whatif"
 )
 
 // Server is the top-level RAVEN daemon that owns all subsystems.
@@ -41,26 +43,36 @@ type Server struct {
 
 // New creates a new RAVEN server from the given config.
 func New(cfg *config.Config, log *slog.Logger) *Server {
-	routeCh := make(chan types.Route, 100_000)
-	vrpStore := store.NewVRPStore()
-	aspaStore := store.NewASPAStore()
-	table := routetable.New()
-	engine := validation.NewEngine(vrpStore, aspaStore, table, log)
-	withdrawCh := make(chan types.Withdrawal, 10_000)
-	srv := &Server{
-		cfg:        cfg,
-		log:        log,
-		table:      table,
-		bmpListen:  bmp.NewListener(cfg.BMP.Listen, routeCh, withdrawCh, log),
-		vrpStore:   vrpStore,
-		aspaStore:  aspaStore,
-		engine:     engine,
-		routeCh:    routeCh,
-		rtrReady:   make(chan struct{}),
-		withdrawCh: withdrawCh,
-	}
-	srv.apiSrv = api.NewServer(table, srv.bmpListen, vrpStore, log, "dev")
-	return srv
+    routeCh    := make(chan types.Route, 100_000)
+    vrpStore   := store.NewVRPStore()
+    aspaStore  := store.NewASPAStore()          // ADD
+    table      := routetable.New()
+    engine     := validation.NewEngine(vrpStore, aspaStore, table, log)
+    withdrawCh := make(chan types.Withdrawal, 10_000)
+
+    srv := &Server{
+        cfg:        cfg,
+        log:        log,
+        table:      table,
+        bmpListen:  bmp.NewListener(cfg.BMP.Listen, routeCh, withdrawCh, log),
+        vrpStore:   vrpStore,
+        aspaStore:  aspaStore,              // ADD
+        engine:     engine,
+        routeCh:    routeCh,
+        rtrReady:   make(chan struct{}),
+        withdrawCh: withdrawCh,
+    }
+
+    // Existing API server
+    srv.apiSrv = api.NewServer(table, srv.bmpListen, vrpStore, log, "dev")
+
+    // Phase 2b: what-if + recommender
+    sim := whatif.NewSimulator(table)
+    rec := recommender.NewRecommender(table, aspaStore)
+    whatifHandler := api.NewWhatIfHandler(sim, rec, aspaStore)
+    whatifHandler.RegisterRoutes(srv.apiSrv.Mux())
+
+    return srv
 }
 
 // SetDemoMode enables demo mode with test VRPs instead of live RTR.
@@ -256,6 +268,18 @@ func (s *Server) routeIngestLoop(ctx context.Context) {
 func (s *Server) updateRouteMetrics() {
     routes := s.table.AllPrePolicy()
     metrics.RouteTableSize.Set(float64(len(routes)))
+
+    // Explicitly zero all known posture/AFI combinations before repopulating.
+    // Using Reset() removes the series entirely, which causes Grafana
+    // lastNotNull panels to show stale values. Set(0) keeps the series at 0.
+    for _, posture := range []string{
+        "secured", "origin-only", "path-suspect", "path-only",
+        "unverified", "origin-invalid",
+    } {
+        for _, afi := range []string{"ipv4", "ipv6"} {
+            metrics.RoutesTotal.WithLabelValues(posture, afi).Set(0)
+        }
+    }
 
     // Count by posture and AFI
     counts := make(map[string]map[string]int)

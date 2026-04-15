@@ -1,14 +1,11 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
 permissions:
   contents: read
-
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -20,7 +17,6 @@ jobs:
       - uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-
   test:
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +30,6 @@ jobs:
         with:
           name: coverage
           path: coverage.out
-
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -60,12 +55,13 @@ jobs:
             -X ${MODULE}/internal/cli.commit=${COMMIT} \
             -X ${MODULE}/internal/cli.date=${DATE}" \
             -o raven-${GOOS}-${GOARCH} ./cmd/raven
-
   proto-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - run: buf lint proto/
       - run: buf breaking proto/ --against '.git#branch=main'
         if: github.event_name == 'pull_request'

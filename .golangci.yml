@@ -1,16 +1,10 @@
-version: "2"
-
 linters:
-  default: none
+  disable-all: true
   enable:
     - govet
     - staticcheck
     - unused
     - gofmt
-
-linters-settings:
-  govet:
-    enable-all: false
 
 issues:
   max-issues-per-linter: 50

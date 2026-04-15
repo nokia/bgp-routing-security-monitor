@@ -8,9 +8,9 @@ import (
 func TestParseCommonHeader(t *testing.T) {
 	// Build a valid BMP common header: version=3, length=42, type=4 (Initiation)
 	data := make([]byte, CommonHeaderLen)
-	data[0] = 3 // version
+	data[0] = 3                               // version
 	binary.BigEndian.PutUint32(data[1:5], 42) // length
-	data[5] = MsgTypeInitiation // type
+	data[5] = MsgTypeInitiation               // type
 
 	hdr, err := ParseCommonHeader(data)
 	if err != nil {

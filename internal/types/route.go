@@ -16,9 +16,9 @@ type Route struct {
 	PeerASN          uint32
 	RouterID         netip.Addr
 	Prefix           netip.Prefix
-	ASPath           []uint32       // flattened (AS_SETs expanded)
-	ASPathRaw        []ASSegment    // preserving segment types for ASPA
-	Origin           OriginType     // IGP/EGP/Incomplete
+	ASPath           []uint32    // flattened (AS_SETs expanded)
+	ASPathRaw        []ASSegment // preserving segment types for ASPA
+	Origin           OriginType  // IGP/EGP/Incomplete
 	NextHop          netip.Addr
 	Communities      []Community
 	LargeCommunities []LargeCommunity
@@ -196,8 +196,8 @@ type ASPAHop struct {
 
 type ASPAResult struct {
 	State      ASPAState
-	FailingHop *ASPAHop    // non-nil if State == Invalid
-	HopDetails []ASPAHop   // per-hop breakdown
+	FailingHop *ASPAHop  // non-nil if State == Invalid
+	HopDetails []ASPAHop // per-hop breakdown
 	Procedure  ASPAProcedure
 }
 
@@ -207,11 +207,11 @@ type ASPAResult struct {
 type SecurityPosture string
 
 const (
-	PostureSecured      SecurityPosture = "secured"
-	PostureOriginOnly   SecurityPosture = "origin-only"
-	PosturePathSuspect  SecurityPosture = "path-suspect"
-	PosturePathOnly     SecurityPosture = "path-only"
-	PostureUnverified   SecurityPosture = "unverified"
+	PostureSecured       SecurityPosture = "secured"
+	PostureOriginOnly    SecurityPosture = "origin-only"
+	PosturePathSuspect   SecurityPosture = "path-suspect"
+	PosturePathOnly      SecurityPosture = "path-only"
+	PostureUnverified    SecurityPosture = "unverified"
 	PostureOriginInvalid SecurityPosture = "origin-invalid"
 )
 

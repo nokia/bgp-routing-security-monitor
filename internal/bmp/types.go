@@ -25,15 +25,15 @@ const (
 
 // BMP Peer Flags (RFC 7854 §4.2)
 const (
-	PeerFlagIPv6    uint8 = 0x80 // Bit 0: 1 = IPv6, 0 = IPv4
+	PeerFlagIPv6       uint8 = 0x80 // Bit 0: 1 = IPv6, 0 = IPv4
 	PeerFlagPostPolicy uint8 = 0x40 // Bit 1: 1 = Post-Policy, 0 = Pre-Policy
-	PeerFlagAS2     uint8 = 0x20 // Bit 2: 1 = AS_PATH uses 2-byte ASNs
-	PeerFlagAdjRIBOut uint8 = 0x10 // Bit 3: 1 = Adj-RIB-Out (RFC 8671)
+	PeerFlagAS2        uint8 = 0x20 // Bit 2: 1 = AS_PATH uses 2-byte ASNs
+	PeerFlagAdjRIBOut  uint8 = 0x10 // Bit 3: 1 = Adj-RIB-Out (RFC 8671)
 )
 
 // BMP Initiation TLV Types (RFC 7854 §4.3)
 const (
-	InitTLVString  uint16 = 0 // Free-form string
+	InitTLVString   uint16 = 0 // Free-form string
 	InitTLVSysDescr uint16 = 1 // sysDescr
 	InitTLVSysName  uint16 = 2 // sysName
 )
@@ -86,10 +86,10 @@ type BMPInitiation struct {
 
 // BMPPeerUp represents a BMP Peer Up message (Type 3).
 type BMPPeerUp struct {
-	PerPeer      BMPPerPeerHeader
-	LocalAddr    netip.Addr
-	LocalPort    uint16
-	RemotePort   uint16
+	PerPeer    BMPPerPeerHeader
+	LocalAddr  netip.Addr
+	LocalPort  uint16
+	RemotePort uint16
 	// Sent and Received OPEN messages are parsed but we primarily
 	// extract capabilities from them (BGP Role, ADD-PATH, etc.)
 }
@@ -109,21 +109,21 @@ type BMPRouteMonitoring struct {
 
 // BMPStatsReport represents a BMP Statistics Report (Type 1).
 type BMPStatsReport struct {
-	PerPeer BMPPerPeerHeader
+	PerPeer  BMPPerPeerHeader
 	Counters map[uint16]uint64
 }
 
 // Peer is the runtime state RAVEN maintains per BMP peer session.
 type Peer struct {
-	Addr      netip.Addr
-	ASN       uint32
-	RouterID  netip.Addr
-	SysName   string
-	SysDescr  string
-	State     string // "up" or "down"
+	Addr       netip.Addr
+	ASN        uint32
+	RouterID   netip.Addr
+	SysName    string
+	SysDescr   string
+	State      string // "up" or "down"
 	RouteCount uint64
-	UpSince   time.Time
-	LastMsg   time.Time
+	UpSince    time.Time
+	LastMsg    time.Time
 }
 
 // PeerKey uniquely identifies a BMP peer.

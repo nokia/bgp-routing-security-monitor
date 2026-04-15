@@ -7,8 +7,8 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/nokia/bgp-routing-security-monitor/internal/whatif"
+	"github.com/spf13/cobra"
 )
 
 func newWhatIfCmd(addr *string) *cobra.Command {

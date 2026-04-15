@@ -7,8 +7,8 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/nokia/bgp-routing-security-monitor/internal/aspa/recommender"
+	"github.com/spf13/cobra"
 )
 
 func newASPACmd(addr *string) *cobra.Command {

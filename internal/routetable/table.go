@@ -22,7 +22,7 @@ type Table struct {
 	shards []shard
 
 	// Prefix index: BART trie mapping prefix -> set of route keys
-	prefixMu sync.RWMutex
+	prefixMu  sync.RWMutex
 	prefixIdx bart.Table[[]types.RouteKey]
 
 	// Secondary index: origin ASN -> route keys
@@ -30,7 +30,7 @@ type Table struct {
 	asnIdx map[uint32][]types.RouteKey
 
 	// Secondary index: security posture -> route keys
-	postureMu sync.RWMutex
+	postureMu  sync.RWMutex
 	postureIdx map[types.SecurityPosture][]types.RouteKey
 }
 
@@ -41,51 +41,51 @@ type shard struct {
 
 // Filter holds query parameters for ListRoutes.
 type Filter struct {
-    PeerAddr string
-    Prefix   string
-    OriginASN uint32
-    Posture   string
-    AFI       string // "ipv4" | "ipv6" | ""
+	PeerAddr  string
+	Prefix    string
+	OriginASN uint32
+	Posture   string
+	AFI       string // "ipv4" | "ipv6" | ""
 }
 
 // ListRoutes returns routes matching the given filter.
 // Used by the what-if simulator and ASPA recommender.
 func (t *Table) ListRoutes(ctx context.Context, f Filter) ([]types.Route, error) {
-    var ptrs []*types.Route
+	var ptrs []*types.Route
 
-    switch {
-    case f.PeerAddr != "":
-        addr, err := netip.ParseAddr(f.PeerAddr)
-        if err != nil {
-            return nil, fmt.Errorf("invalid peer addr: %w", err)
-        }
-        ptrs = t.GetByPeer(addr)
-    case f.Prefix != "":
-        p, err := netip.ParsePrefix(f.Prefix)
-        if err != nil {
-            return nil, fmt.Errorf("invalid prefix: %w", err)
-        }
-        ptrs = t.GetByPrefix(p)
-    case f.OriginASN != 0:
-        ptrs = t.GetByOriginASN(f.OriginASN)
-    case f.Posture != "":
-        ptrs = t.GetByPosture(types.SecurityPosture(f.Posture))
-    default:
-        ptrs = t.All()
-    }
+	switch {
+	case f.PeerAddr != "":
+		addr, err := netip.ParseAddr(f.PeerAddr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid peer addr: %w", err)
+		}
+		ptrs = t.GetByPeer(addr)
+	case f.Prefix != "":
+		p, err := netip.ParsePrefix(f.Prefix)
+		if err != nil {
+			return nil, fmt.Errorf("invalid prefix: %w", err)
+		}
+		ptrs = t.GetByPrefix(p)
+	case f.OriginASN != 0:
+		ptrs = t.GetByOriginASN(f.OriginASN)
+	case f.Posture != "":
+		ptrs = t.GetByPosture(types.SecurityPosture(f.Posture))
+	default:
+		ptrs = t.All()
+	}
 
-    // Apply AFI filter
-    routes := make([]types.Route, 0, len(ptrs))
-    for _, r := range ptrs {
-        if f.AFI == "ipv4" && !r.Prefix.Addr().Is4() {
-            continue
-        }
-        if f.AFI == "ipv6" && !r.Prefix.Addr().Is6() {
-            continue
-        }
-        routes = append(routes, *r)
-    }
-    return routes, nil
+	// Apply AFI filter
+	routes := make([]types.Route, 0, len(ptrs))
+	for _, r := range ptrs {
+		if f.AFI == "ipv4" && !r.Prefix.Addr().Is4() {
+			continue
+		}
+		if f.AFI == "ipv6" && !r.Prefix.Addr().Is6() {
+			continue
+		}
+		routes = append(routes, *r)
+	}
+	return routes, nil
 }
 
 // New creates a new Route Table.

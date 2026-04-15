@@ -17,15 +17,15 @@ import (
 
 // Listener accepts BMP connections from routers and processes messages.
 type Listener struct {
-	addr        string
-	log         *slog.Logger
-	routeCh     chan<- types.Route
-	withdrawCh  chan<- types.Withdrawal
-	peerMu      sync.RWMutex
-	peers       map[PeerKey]*Peer
-	routerMu    sync.RWMutex
-	routers     map[netip.Addr]string
-	listener    net.Listener
+	addr       string
+	log        *slog.Logger
+	routeCh    chan<- types.Route
+	withdrawCh chan<- types.Withdrawal
+	peerMu     sync.RWMutex
+	peers      map[PeerKey]*Peer
+	routerMu   sync.RWMutex
+	routers    map[netip.Addr]string
+	listener   net.Listener
 }
 
 // NewListener creates a BMP listener that sends parsed routes to routeCh.
@@ -258,12 +258,12 @@ func (l *Listener) processMessage(
 
 	case MsgTypeRouteMonitoring:
 		l.routerMu.RLock()
-    	sysName := l.routers[routerAddr]
-    	l.routerMu.RUnlock()
-    	if sysName == "" {
-        	sysName = routerAddr.String()
-    	}
-    	metrics.BMPMessagesTotal.WithLabelValues(sysName, "route_monitoring").Inc()
+		sysName := l.routers[routerAddr]
+		l.routerMu.RUnlock()
+		if sysName == "" {
+			sysName = routerAddr.String()
+		}
+		metrics.BMPMessagesTotal.WithLabelValues(sysName, "route_monitoring").Inc()
 
 		rm, err := ParseRouteMonitoring(body)
 		if err != nil {

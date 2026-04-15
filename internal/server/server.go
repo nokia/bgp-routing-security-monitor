@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/nokia/bgp-routing-security-monitor/internal/api"
 	"github.com/nokia/bgp-routing-security-monitor/internal/aspa/recommender"
 	"github.com/nokia/bgp-routing-security-monitor/internal/bmp"
@@ -23,6 +22,7 @@ import (
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 	"github.com/nokia/bgp-routing-security-monitor/internal/validation"
 	"github.com/nokia/bgp-routing-security-monitor/internal/whatif"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server is the top-level RAVEN daemon that owns all subsystems.
@@ -43,36 +43,36 @@ type Server struct {
 
 // New creates a new RAVEN server from the given config.
 func New(cfg *config.Config, log *slog.Logger) *Server {
-    routeCh    := make(chan types.Route, 100_000)
-    vrpStore   := store.NewVRPStore()
-    aspaStore  := store.NewASPAStore()          // ADD
-    table      := routetable.New()
-    engine     := validation.NewEngine(vrpStore, aspaStore, table, log)
-    withdrawCh := make(chan types.Withdrawal, 10_000)
+	routeCh := make(chan types.Route, 100_000)
+	vrpStore := store.NewVRPStore()
+	aspaStore := store.NewASPAStore() // ADD
+	table := routetable.New()
+	engine := validation.NewEngine(vrpStore, aspaStore, table, log)
+	withdrawCh := make(chan types.Withdrawal, 10_000)
 
-    srv := &Server{
-        cfg:        cfg,
-        log:        log,
-        table:      table,
-        bmpListen:  bmp.NewListener(cfg.BMP.Listen, routeCh, withdrawCh, log),
-        vrpStore:   vrpStore,
-        aspaStore:  aspaStore,              // ADD
-        engine:     engine,
-        routeCh:    routeCh,
-        rtrReady:   make(chan struct{}),
-        withdrawCh: withdrawCh,
-    }
+	srv := &Server{
+		cfg:        cfg,
+		log:        log,
+		table:      table,
+		bmpListen:  bmp.NewListener(cfg.BMP.Listen, routeCh, withdrawCh, log),
+		vrpStore:   vrpStore,
+		aspaStore:  aspaStore, // ADD
+		engine:     engine,
+		routeCh:    routeCh,
+		rtrReady:   make(chan struct{}),
+		withdrawCh: withdrawCh,
+	}
 
-    // Existing API server
-    srv.apiSrv = api.NewServer(table, srv.bmpListen, vrpStore, log, "dev")
+	// Existing API server
+	srv.apiSrv = api.NewServer(table, srv.bmpListen, vrpStore, log, "dev")
 
-    // Phase 2b: what-if + recommender
-    sim := whatif.NewSimulator(table)
-    rec := recommender.NewRecommender(table, aspaStore)
-    whatifHandler := api.NewWhatIfHandler(sim, rec, aspaStore)
-    whatifHandler.RegisterRoutes(srv.apiSrv.Mux())
+	// Phase 2b: what-if + recommender
+	sim := whatif.NewSimulator(table)
+	rec := recommender.NewRecommender(table, aspaStore)
+	whatifHandler := api.NewWhatIfHandler(sim, rec, aspaStore)
+	whatifHandler.RegisterRoutes(srv.apiSrv.Mux())
 
-    return srv
+	return srv
 }
 
 // SetDemoMode enables demo mode with test VRPs instead of live RTR.
@@ -113,7 +113,7 @@ func (s *Server) Run() error {
 	// RTR clients or demo mode
 	if s.demoMode {
 		rtr.LoadTestVRPs(s.vrpStore, s.log)
-    	close(s.rtrReady)
+		close(s.rtrReady)
 	} else {
 		s.log.Info("starting RTR clients", "count", len(s.cfg.RTR.Caches))
 		for _, cache := range s.cfg.RTR.Caches {
@@ -225,7 +225,7 @@ func (s *Server) routeIngestLoop(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	}
-	
+
 	var count uint64
 
 	for {
@@ -266,42 +266,42 @@ func (s *Server) routeIngestLoop(ctx context.Context) {
 
 // updateRouteMetrics refreshes Prometheus gauges for route counts.
 func (s *Server) updateRouteMetrics() {
-    routes := s.table.AllPrePolicy()
-    metrics.RouteTableSize.Set(float64(len(routes)))
+	routes := s.table.AllPrePolicy()
+	metrics.RouteTableSize.Set(float64(len(routes)))
 
-    // Explicitly zero all known posture/AFI combinations before repopulating.
-    // Using Reset() removes the series entirely, which causes Grafana
-    // lastNotNull panels to show stale values. Set(0) keeps the series at 0.
-    for _, posture := range []string{
-        "secured", "origin-only", "path-suspect", "path-only",
-        "unverified", "origin-invalid",
-    } {
-        for _, afi := range []string{"ipv4", "ipv6"} {
-            metrics.RoutesTotal.WithLabelValues(posture, afi).Set(0)
-        }
-    }
+	// Explicitly zero all known posture/AFI combinations before repopulating.
+	// Using Reset() removes the series entirely, which causes Grafana
+	// lastNotNull panels to show stale values. Set(0) keeps the series at 0.
+	for _, posture := range []string{
+		"secured", "origin-only", "path-suspect", "path-only",
+		"unverified", "origin-invalid",
+	} {
+		for _, afi := range []string{"ipv4", "ipv6"} {
+			metrics.RoutesTotal.WithLabelValues(posture, afi).Set(0)
+		}
+	}
 
-    // Count by posture and AFI
-    counts := make(map[string]map[string]int)
-    for _, r := range routes {
-        posture := string(r.SecurityPosture)
-        if posture == "" {
-            posture = "unverified"
-        }
-        afi := "ipv4"
-        if r.Prefix.Addr().Is6() {
-            afi = "ipv6"
-        }
-        if counts[posture] == nil {
-            counts[posture] = make(map[string]int)
-        }
-        counts[posture][afi]++
-    }
-    for posture, afis := range counts {
-        for afi, n := range afis {
-            metrics.RoutesTotal.WithLabelValues(posture, afi).Set(float64(n))
-        }
-    }
+	// Count by posture and AFI
+	counts := make(map[string]map[string]int)
+	for _, r := range routes {
+		posture := string(r.SecurityPosture)
+		if posture == "" {
+			posture = "unverified"
+		}
+		afi := "ipv4"
+		if r.Prefix.Addr().Is6() {
+			afi = "ipv6"
+		}
+		if counts[posture] == nil {
+			counts[posture] = make(map[string]int)
+		}
+		counts[posture][afi]++
+	}
+	for posture, afis := range counts {
+		for afi, n := range afis {
+			metrics.RoutesTotal.WithLabelValues(posture, afi).Set(float64(n))
+		}
+	}
 }
 
 // runPrometheus starts the Prometheus metrics HTTP server.

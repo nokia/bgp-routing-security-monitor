@@ -136,7 +136,7 @@ func printASPARecommendations(suggestions []recommender.ASPASuggestion, format s
 	}
 
 	fmt.Printf("\n  ASPA OBJECT RECOMMENDATIONS (%d)\n", len(suggestions))
-	fmt.Println("  Note: heuristic — based on observed AS_PATHs only. Verify with your peers.\n")
+	fmt.Println("  Note: heuristic — based on observed AS_PATHs only. Verify with your peers.")
 
 	for _, s := range suggestions {
 		status := "no ASPA record"
@@ -156,6 +156,6 @@ func printASPARecommendations(suggestions []recommender.ASPASuggestion, format s
 			fmt.Fprintf(w, "  │  AS%d\t%d routes\t%s\n", p.ProviderASN, p.ObservedCount, covered)
 		}
 		w.Flush()
-		fmt.Println("  └──────────────────────────────────────────────────\n")
+		fmt.Println("  └──────────────────────────────────────────────────")
 	}
 }

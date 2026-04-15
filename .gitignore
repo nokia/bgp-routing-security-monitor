@@ -16,3 +16,5 @@ vendor/
 
 # Generated protobuf
 /gen/
+# Containerlab generated files
+lab/clab-raven-demo/

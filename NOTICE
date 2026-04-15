@@ -1,0 +1,11 @@
+bgp-routing-security-monitor (RAVEN - Routing Analysis, Validation, and Event Network)
+Copyright (c) 2026, Nokia
+
+This product includes software developed by third parties.
+
+--------------------------------------------------------------------------------
+GoBGP (https://github.com/osrg/gobgp)
+Copyright (C) 2015 Nippon Telegraph and Telephone Corporation
+Licensed under the Apache License, Version 2.0
+http://www.apache.org/licenses/LICENSE-2.0
+--------------------------------------------------------------------------------

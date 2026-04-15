@@ -23,12 +23,12 @@ func NewRecommender(table *routetable.Table, aspaStore *store.ASPAStore) *Recomm
 }
 
 type ASPASuggestion struct {
-	CustomerASN        uint32              `json:"customer_asn"`
+	CustomerASN        uint32               `json:"customer_asn"`
 	SuggestedProviders []ProviderSuggestion `json:"suggested_providers"`
-	AlreadyHasASPA     bool                `json:"already_has_aspa"`
-	ExistingProviders  []uint32            `json:"existing_providers,omitempty"`
-	ObservationCount   int                 `json:"observation_count"`
-	Confidence         int                 `json:"confidence"`
+	AlreadyHasASPA     bool                 `json:"already_has_aspa"`
+	ExistingProviders  []uint32             `json:"existing_providers,omitempty"`
+	ObservationCount   int                  `json:"observation_count"`
+	Confidence         int                  `json:"confidence"`
 }
 
 type ProviderSuggestion struct {

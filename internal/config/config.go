@@ -16,7 +16,7 @@ type Config struct {
 }
 
 type BMPConfig struct {
-	Listen string      `mapstructure:"listen"`
+	Listen string       `mapstructure:"listen"`
 	Kafka  *KafkaIngest `mapstructure:"kafka"` // Phase 4 — nil means embedded BMP receiver
 }
 
@@ -33,9 +33,9 @@ type RTRConfig struct {
 }
 
 type RTRCacheConfig struct {
-	Address    string    `mapstructure:"address"`
-	Preference int       `mapstructure:"preference"`
-	Transport  string    `mapstructure:"transport"` // "tcp", "tls", "ssh"
+	Address    string     `mapstructure:"address"`
+	Preference int        `mapstructure:"preference"`
+	Transport  string     `mapstructure:"transport"` // "tcp", "tls", "ssh"
 	TLS        *TLSConfig `mapstructure:"tls"`
 }
 

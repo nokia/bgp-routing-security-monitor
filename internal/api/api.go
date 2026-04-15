@@ -45,11 +45,11 @@ type PeerResponse struct {
 
 // StatusResponse is the system health API output.
 type StatusResponse struct {
-	Version    string                    `json:"version"`
-	Uptime     string                    `json:"uptime"`
-	BMP        []PeerResponse            `json:"bmp_peers"`
-	RTR        RTRStatusResponse         `json:"rtr"`
-	RouteTable RouteTableStatusResponse  `json:"route_table"`
+	Version    string                   `json:"version"`
+	Uptime     string                   `json:"uptime"`
+	BMP        []PeerResponse           `json:"bmp_peers"`
+	RTR        RTRStatusResponse        `json:"rtr"`
+	RouteTable RouteTableStatusResponse `json:"route_table"`
 }
 
 // RTRStatusResponse is RTR cache health.
@@ -61,8 +61,8 @@ type RTRStatusResponse struct {
 
 // RouteTableStatusResponse is route table summary.
 type RouteTableStatusResponse struct {
-	TotalRoutes    uint64            `json:"total_routes"`
-	ByPosture      map[string]uint64 `json:"by_posture"`
+	TotalRoutes uint64            `json:"total_routes"`
+	ByPosture   map[string]uint64 `json:"by_posture"`
 }
 
 // WatchEvent is a streaming event for raven watch.

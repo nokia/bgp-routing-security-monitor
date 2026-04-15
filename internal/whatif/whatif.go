@@ -45,12 +45,12 @@ type PeerImpact struct {
 }
 
 type ASPAEnforceResult struct {
-	TotalRoutes        int         `json:"total_routes"`
-	RejectedRoutes     int         `json:"rejected_routes"`
-	UnverifiableRoutes int         `json:"unverifiable_routes"`
-	AffectedPrefixes   int         `json:"affected_prefixes"`
-	AffectedOrigins    int         `json:"affected_origins"`
-	TopFailingHops     []HopImpact `json:"top_failing_hops"`
+	TotalRoutes        int           `json:"total_routes"`
+	RejectedRoutes     int           `json:"rejected_routes"`
+	UnverifiableRoutes int           `json:"unverifiable_routes"`
+	AffectedPrefixes   int           `json:"affected_prefixes"`
+	AffectedOrigins    int           `json:"affected_origins"`
+	TopFailingHops     []HopImpact   `json:"top_failing_hops"`
 	RejectedRouteList  []types.Route `json:"rejected_route_list,omitempty"`
 }
 

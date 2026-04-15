@@ -12,11 +12,12 @@ import (
 // This simulates what Routinator would provide via RTR.
 //
 // Lab prefixes and their ROV outcomes:
-//   198.51.100.0/24 origin AS65000 → Valid (ROA matches)
-//   203.0.113.0/24  origin AS65000 → Valid (ROA matches)
-//   192.0.2.0/24    origin AS99999 → Invalid (wrong origin — simulates hijack)
-//   100.64.0.0/24   (no ROA)       → NotFound (no RPKI coverage)
-//   10.10.0.0/24    (no ROA)       → NotFound (no RPKI coverage)
+//
+//	198.51.100.0/24 origin AS65000 → Valid (ROA matches)
+//	203.0.113.0/24  origin AS65000 → Valid (ROA matches)
+//	192.0.2.0/24    origin AS99999 → Invalid (wrong origin — simulates hijack)
+//	100.64.0.0/24   (no ROA)       → NotFound (no RPKI coverage)
+//	10.10.0.0/24    (no ROA)       → NotFound (no RPKI coverage)
 func LoadTestVRPs(vrpStore *store.VRPStore, log *slog.Logger) {
 	vrps := []types.VRP{
 		// ROA for 198.51.100.0/24 authorizing AS65000

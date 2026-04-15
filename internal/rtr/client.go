@@ -175,8 +175,8 @@ func (c *Client) runSession(ctx context.Context) error {
 			} else {
 				c.vrpStore.AddVRP(vrp)
 			}
-			
-			case PDUASPA:
+
+		case PDUASPA:
 			customerASN, providerASNs, withdraw, err := c.parseASPAPDU(sessionID, payload)
 			if err != nil {
 				c.log.Error("bad ASPA PDU", "error", err)
@@ -279,7 +279,8 @@ func (c *Client) readPDU(r *bufio.Reader) (pduType uint8, sessionID uint16, payl
 
 // parseASPAPDU parses an ASPA PDU (type 11) from RTR v2.
 // Format per draft-ietf-sidrops-8210bis:
-//   Flags (1) | AFI Flags (1) | Customer ASN (4) | Provider AS Count (2) | Provider ASNs (4 each)
+//
+//	Flags (1) | AFI Flags (1) | Customer ASN (4) | Provider AS Count (2) | Provider ASNs (4 each)
 func (c *Client) parseASPAPDU(sessionID uint16, data []byte) (customerASN uint32, providerASNs []uint32, withdraw bool, err error) {
 	flags := uint8(sessionID >> 8)
 	withdraw = flags&0x01 == 0

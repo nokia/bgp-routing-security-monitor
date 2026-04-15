@@ -118,9 +118,9 @@ func (s *ASPAStore) AffectedASNs() []uint32 {
 
 // HasProvider returns true if providerASN is in this record's provider set.
 func (r *ASPARecord) HasProvider(providerASN uint32) bool {
-    if r == nil {
-        return false
-    }
-    _, ok := r.Providers[providerASN]
-    return ok
+	if r == nil {
+		return false
+	}
+	_, ok := r.Providers[providerASN]
+	return ok
 }

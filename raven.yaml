@@ -20,3 +20,38 @@ outputs:
 logging:
   level: info
   format: json
+
+events:
+  rules:
+    - name: "alert-origin-invalid"
+      trigger:
+        type: posture_change
+        postures: ["origin-invalid"]
+      cooldown: 60s
+      actions:
+        - type: log
+          level: warn
+        - type: webhook
+          url: "https://hooks.example.com/raven"
+          max_attempts: 2
+          timeout: 3s
+        - type: flowspec
+          gobgp_address: "gobgp:50051"
+          dry_run: true
+          ttl: 5m
+          rule_action: drop
+          max_rules: 50
+          reaper_interval: 30s
+
+    - name: "alert-route-leak"
+      trigger:
+        type: posture_change
+        postures: ["path-suspect"]
+      cooldown: 60s
+      actions:
+        - type: log
+          level: warn
+        - type: webhook
+          url: "https://hooks.example.com/raven"
+          max_attempts: 2
+          timeout: 3s

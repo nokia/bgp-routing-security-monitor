@@ -1,7 +1,10 @@
 package store
 
 import (
+	"sort"
 	"sync"
+
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
 // ASPARecord holds the validated provider set for a single customer ASN.
@@ -102,6 +105,45 @@ func (s *ASPAStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.records)
+}
+
+// Snapshot returns all ASPA records for persistence.
+// Provider sets are converted to sorted slices for deterministic serialisation.
+func (s *ASPAStore) Snapshot() []types.ASPARecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]types.ASPARecord, 0, len(s.records))
+	for _, r := range s.records {
+		providers := make([]uint32, 0, len(r.Providers))
+		for p := range r.Providers {
+			providers = append(providers, p)
+		}
+		sort.Slice(providers, func(i, j int) bool { return providers[i] < providers[j] })
+		result = append(result, types.ASPARecord{
+			CustomerASN:  r.CustomerASN,
+			ProviderASNs: providers,
+		})
+	}
+	return result
+}
+
+// Restore populates the store from a snapshot, replacing any existing records.
+func (s *ASPAStore) Restore(aspas []types.ASPARecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.records = make(map[uint32]*ASPARecord, len(aspas))
+	for _, a := range aspas {
+		r := &ASPARecord{
+			CustomerASN: a.CustomerASN,
+			Providers:   make(map[uint32]struct{}, len(a.ProviderASNs)),
+		}
+		for _, p := range a.ProviderASNs {
+			r.Providers[p] = struct{}{}
+		}
+		s.records[a.CustomerASN] = r
+	}
 }
 
 // AffectedASNs returns all customer ASNs in the store.

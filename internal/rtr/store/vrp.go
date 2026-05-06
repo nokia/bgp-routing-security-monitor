@@ -135,6 +135,17 @@ func (s *VRPStore) All() []types.VRP {
 	return cp
 }
 
+// Snapshot returns a copy of all VRPs for persistence.
+func (s *VRPStore) Snapshot() []types.VRP {
+	return s.All()
+}
+
+// Restore replaces the store contents from a snapshot.
+// The serial is reset to 0 so the next RTR connection performs a full sync.
+func (s *VRPStore) Restore(vrps []types.VRP) {
+	s.ReplaceAll(vrps, 0, 0)
+}
+
 // rebuildIndex rebuilds the prefix lookup index. Must be called with mu held.
 func (s *VRPStore) rebuildIndex() {
 	s.byPrefix = make(map[string][]types.VRP, len(s.vrps))

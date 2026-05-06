@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
 # RAVEN Demo Master Script
-# Run from the raven project root: bash lab/demo-master.sh
+# Run from inside the lab/ directory: ./demo-master.sh
 #
 #   demo-master.sh setup         — start full stack (lab + Routinator + RAVEN + Prometheus + Grafana)
 #   demo-master.sh down          — stop everything in one command
@@ -15,7 +15,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-RAVEN_BIN="./raven"
+# Resolve raven binary — prefer a local build, fall back to PATH
+RAVEN_BIN=""
+if [ -f "$(dirname "$0")/../raven" ]; then
+    RAVEN_BIN="$(dirname "$0")/../raven"
+elif [ -f "$(dirname "$0")/../bin/raven" ]; then
+    RAVEN_BIN="$(dirname "$0")/../bin/raven"
+elif command -v raven &>/dev/null; then
+    RAVEN_BIN="raven"
+else
+    echo "ERROR: raven binary not found. Run 'make build' from the"
+    echo "       repo root first, or install raven to PATH."
+    exit 1
+fi
 RAVEN_ADDR="localhost:11020"
 EDGE_CONTAINER="clab-raven-demo-edge"
 GRAFANA_URL="http://localhost:3000/d/raven-security-posture"
@@ -59,10 +71,14 @@ case "$CMD" in
 setup)
   header "RAVEN Demo Setup"
 
+  # Add to the top of the setup case, before containerlab deploy
+  echo "▶ Building RAVEN binary..."
+  (cd "$(dirname "$0")/.." && make build)
+  echo "✓ RAVEN binary up to date"
+
   # ── Containerlab ──
   step "Starting Containerlab topology..."
-  cd lab && sudo containerlab deploy -t raven-demo.clab.yaml --reconfigure 2>/dev/null || true
-  cd ..
+  sudo containerlab deploy -t raven-demo.clab.yaml --reconfigure 2>/dev/null || true
 
   # Give FRR routers time to come up and establish BGP sessions before
   # RAVEN starts — this ensures a clean single table dump, not a mix of
@@ -93,7 +109,7 @@ setup)
   step "Starting RAVEN daemon..."
   pkill -f "raven serve" 2>/dev/null || true
   sleep 2
-  $RAVEN_BIN serve --config raven.yaml > /tmp/raven.log 2>&1 &
+  $RAVEN_BIN serve --config ../raven.yaml > /tmp/raven.log 2>&1 &
 
   # Wait for RTR sync (VRPs loaded) before checking routes
   echo "  Waiting for RAVEN to sync with Routinator..."
@@ -110,21 +126,21 @@ setup)
   sleep 8
 
   # ── Install permanent route-map on upstream for ASPA leak scenario ──────────
-  # This route-map prepends AS2121 on 193.0.0.0/21 when upstream sends it to
-  # the edge router, ensuring the AS_PATH [65000 2121] is always present for
+  # This route-map prepends AS1199 on 145.102.136.0/22 when upstream sends it to
+  # the edge router, ensuring the AS_PATH [65000 1199] is always present for
   # ASPA validation. It is permanent infrastructure — never touched by
   # inject/clean cycles.
   step "Installing permanent ROUTE-LEAK route-map on upstream (AS65000)..."
-  # seq 10: prepend AS2121 onto 193.0.0.0/21 → edge sees [65000,2121,2121], ASPA invalid
+  # seq 10: prepend AS1199 onto 145.102.136.0/22 → edge sees [65000,1199], ASPA invalid
   # seq 20: prepend AS65001 onto 10.10.0.0/24 → edge sees [65000,65001], origin-invalid
   # seq 30: catch-all permit — without this FRR denies all other routes to edge
   if ! docker exec clab-raven-demo-upstream vtysh \
       -c "configure terminal" \
-      -c "ip prefix-list LEAK-PREFIX permit 193.0.0.0/21" \
+      -c "ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
       -c "ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
       -c "route-map ROUTE-LEAK permit 10" \
       -c " match ip address prefix-list LEAK-PREFIX" \
-      -c " set as-path prepend 2121" \
+      -c " set as-path prepend 1199" \
       -c "exit" \
       -c "route-map ROUTE-LEAK permit 20" \
       -c " match ip address prefix-list EDGE-HIJACK-PREFIX" \
@@ -202,64 +218,59 @@ PROMEOF
 
   # ── Grafana ──
   step "Starting Grafana..."
+  # Always remove and recreate Grafana for a clean state
   if sudo docker ps -a --format '{{.Names}}' | grep -q '^grafana$'; then
-    sudo docker start grafana > /dev/null
-  else
-    sudo docker run -d \
-      --name grafana \
-      -p 3000:3000 \
-      -e GF_SECURITY_ADMIN_PASSWORD=raven123 \
-      grafana/grafana:latest > /dev/null
+    sudo docker rm -f grafana > /dev/null
   fi
-  sleep 6
+  sudo docker run -d \
+    --name grafana \
+    -p 3000:3000 \
+    -e GF_SECURITY_ADMIN_PASSWORD=raven123 \
+    -e GF_AUTH_ANONYMOUS_ENABLED=false \
+    grafana/grafana:latest > /dev/null
+
+  # Wait for Grafana to be ready (up to 30s)
+  echo -n "  Waiting for Grafana to be ready..."
+  for i in $(seq 1 30); do
+    if curl -s http://admin:raven123@localhost:3000/api/health \
+        | grep -q '"database": "ok"' 2>/dev/null; then
+      echo " ready"
+      break
+    fi
+    echo -n "."
+    sleep 1
+  done
 
   # ── Configure Grafana datasource — always point at Prometheus on Docker bridge ──
   step "Configuring Grafana datasource..."
-  DS_RESPONSE=$(curl -s http://admin:raven123@localhost:3000/api/datasources)
-  DS_ID=$(echo "$DS_RESPONSE" | python3 -c "
-import json,sys
-sources=json.load(sys.stdin)
-prom=next((s for s in sources if s['type']=='prometheus'),None)
-print(prom['id'] if prom else 'new')
-" 2>/dev/null || echo "new")
-  DS_UID=$(echo "$DS_RESPONSE" | python3 -c "
-import json,sys
-sources=json.load(sys.stdin)
-prom=next((s for s in sources if s['type']=='prometheus'),None)
-print(prom['uid'] if prom else '')
-" 2>/dev/null || echo "")
-
-  DS_PAYLOAD="{
-    \"name\": \"Prometheus\",
-    \"type\": \"prometheus\",
-    \"access\": \"proxy\",
-    \"url\": \"http://172.17.0.1:9090\",
-    \"isDefault\": true,
-    \"jsonData\": {\"httpMethod\": \"POST\"}
-  }"
-
-  if [ "$DS_ID" = "new" ]; then
-    curl -s -X POST http://admin:raven123@localhost:3000/api/datasources \
-      -H "Content-Type: application/json" -d "$DS_PAYLOAD" > /dev/null
-    DS_ID=$(curl -s http://admin:raven123@localhost:3000/api/datasources | python3 -c "
-import json,sys; sources=json.load(sys.stdin)
-print(next(s['id'] for s in sources if s['type']=='prometheus'))")
-  else
-    curl -s -X PUT "http://admin:raven123@localhost:3000/api/datasources/${DS_ID}" \
-      -H "Content-Type: application/json" \
-      -d "{\"id\":${DS_ID},\"uid\":\"${DS_UID}\",\"name\":\"Prometheus\",\"type\":\"prometheus\",\"access\":\"proxy\",\"url\":\"http://172.17.0.1:9090\",\"isDefault\":true,\"jsonData\":{\"httpMethod\":\"POST\"}}" > /dev/null
-  fi
+  curl -s -X POST http://admin:raven123@localhost:3000/api/datasources \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"name\": \"Prometheus\",
+      \"type\": \"prometheus\",
+      \"access\": \"proxy\",
+      \"url\": \"http://172.17.0.1:9090\",
+      \"isDefault\": true,
+      \"jsonData\": {
+        \"httpMethod\": \"POST\",
+        \"timeInterval\": \"10s\"
+      }
+    }" > /dev/null
   ok "Grafana datasource → Prometheus at http://172.17.0.1:9090"
+
+  PROM_UID=$(curl -s http://admin:raven123@localhost:3000/api/datasources \
+    | python3 -c "
+import json,sys
+sources=json.load(sys.stdin)
+print(next(s['uid'] for s in sources if s['type']=='prometheus'))
+")
 
   # ── Import dashboard ──
   step "Importing Grafana dashboard..."
-  PROM_UID=$(curl -s http://admin:raven123@localhost:3000/api/datasources | python3 -c "
-import json,sys; sources=json.load(sys.stdin)
-print(next(s['uid'] for s in sources if s['type']=='prometheus'))")
   curl -s -X POST http://admin:raven123@localhost:3000/api/dashboards/import \
     -H "Content-Type: application/json" \
-    -d "{\"dashboard\":$(cat lab/grafana-dashboard.json),\"overwrite\":true,\"inputs\":[{\"name\":\"DS_PROMETHEUS\",\"type\":\"datasource\",\"pluginId\":\"prometheus\",\"value\":\"$PROM_UID\"}]}" \
-    > /dev/null && ok "Dashboard imported" || warn "Dashboard import failed — import manually from lab/grafana-dashboard.json"
+    -d "{\"dashboard\":$(cat grafana-dashboard.json),\"overwrite\":true,\"inputs\":[{\"name\":\"DS_PROMETHEUS\",\"type\":\"datasource\",\"pluginId\":\"prometheus\",\"value\":\"$PROM_UID\"}]}" \
+    > /dev/null && ok "Dashboard imported" || warn "Dashboard import failed — import manually from grafana-dashboard.json"
 
   # ── Final check ──
   echo ""
@@ -285,9 +296,9 @@ down)
   header "Bringing Down RAVEN Demo"
   pkill -f "raven serve"   2>/dev/null && ok "RAVEN stopped"      || warn "RAVEN was not running"
   pkill -x routinator      2>/dev/null && ok "Routinator stopped" || warn "Routinator was not running"
-  sudo docker stop prometheus grafana 2>/dev/null && ok "Prometheus + Grafana stopped" || warn "Containers were not running"
-  cd lab && sudo containerlab destroy -t raven-demo.clab.yaml 2>/dev/null && ok "Lab destroyed" || warn "Lab was not running"
-  cd ..
+  sudo docker rm -f prometheus grafana 2>/dev/null || true
+  ok "Prometheus + Grafana removed"
+  sudo containerlab destroy -t raven-demo.clab.yaml 2>/dev/null && ok "Lab destroyed" || warn "Lab was not running"
   ok "All done."
   ;;
 
@@ -367,16 +378,16 @@ hijack-clean)
 leak)
   header "Attack Scenario 2 — Route Leak (ASPA)"
 
-  echo "  Prefix:         193.0.0.0/21"
-  echo "  Origin:         AS2121  (RIPE NCC — has valid ROA)"
-  echo "  ASPA providers: AS3333 only"
-  echo "  Simulated path: AS2121 → AS65000 → AS65001"
-  echo "  Mechanism:      AS65000 originates 193.0.0.0/21, route-map prepends AS2121"
-  echo "                  Edge sees AS_PATH [65000 2121], origin=AS2121"
-  echo "  Violation:      AS65000 is NOT an authorised provider of AS2121"
+  echo "  Prefix:         145.102.136.0/22"
+  echo "  Origin:         AS1199  (SURFnet — has valid ROA)"
+  echo "  ASPA providers: AS1103 only"
+  echo "  Simulated path: AS1199 → AS65000 → AS65001"
+  echo "  Mechanism:      AS65000 originates 145.102.136.0/22, route-map prepends AS1199"
+  echo "                  Edge sees AS_PATH [65000 1199], origin=AS1199"
+  echo "  Violation:      AS65000 is NOT an authorised provider of AS1199"
   echo ""
 
-  # ── Step 1: BEFORE state — 193.0.0.0/21 not in table, path-suspect = 0 ──
+  # ── Step 1: BEFORE state — 145.102.136.0/22 not in table, path-suspect = 0 ──
   step "BEFORE — path-suspect routes (should be empty):"
   $RAVEN_BIN --address $RAVEN_ADDR routes --posture path-suspect 2>&1 || true
   echo "  (none — path-suspect = 0)"
@@ -384,17 +395,17 @@ leak)
   ok "Baseline confirmed: path-suspect counter = 0 in Grafana"
   echo ""
 
-  # ── Step 2: Originate 193.0.0.0/21 on upstream (AS65000) ──
-  # The existing ROUTE-LEAK route-map (seq 10) prepends AS2121 on 193.0.0.0/21
-  # when sending to the edge neighbour, so edge receives AS_PATH [65000 2121].
-  # AS65000 is not in AS2121's ASPA provider set (only AS3333) → ASPA:Invalid.
-  step "Injecting 193.0.0.0/21 on upstream (AS65000) — simulating route leak..."
+  # ── Step 2: Originate 145.102.136.0/22 on upstream (AS65000) ──
+  # The existing ROUTE-LEAK route-map (seq 10) prepends AS1199 on 145.102.136.0/22
+  # when sending to the edge neighbour, so edge receives AS_PATH [65000 1199].
+  # AS65000 is not in AS1199's ASPA provider set (only AS1103) → ASPA:Invalid.
+  step "Injecting 145.102.136.0/22 on upstream (AS65000) — simulating route leak..."
   docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
-    -c "ip route 193.0.0.0/21 blackhole" \
+    -c "ip route 145.102.136.0/22 blackhole" \
     -c "router bgp 65000" \
     -c " address-family ipv4 unicast" \
-    -c "  network 193.0.0.0/21" \
+    -c "  network 145.102.136.0/22" \
     -c " exit-address-family" \
     -c "end"
   echo "  Triggering soft outbound reset to push route to edge immediately..."
@@ -404,15 +415,15 @@ leak)
   sleep 5
 
   # ── Step 3: Show detection ──
-  step "RAVEN detection — 193.0.0.0/21 (ROV:Valid, ASPA:Invalid, posture:path-suspect):"
-  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 193.0.0.0/21
+  step "RAVEN detection — 145.102.136.0/22 (ROV:Valid, ASPA:Invalid, posture:path-suspect):"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 145.102.136.0/22
   echo ""
 
-  warn "ROV shows Valid — the origin AS2121 is legitimate."
+  warn "ROV shows Valid — the origin AS1199 is legitimate."
   warn "A router running only ROV would accept this route with no alarm."
   echo ""
-  echo "  Failing hop:  AS2121 (customer) → AS65000 (provider)"
-  echo "  Reason:       AS65000 not in AS2121 ASPA provider set (only AS3333 is)"
+  echo "  Failing hop:  AS1199 (customer) → AS65000 (provider)"
+  echo "  Reason:       AS65000 not in AS1199 ASPA provider set (only AS1103 is)"
   echo ""
 
   alert "ROUTE LEAK DETECTED — ASPA caught what ROV missed."
@@ -426,10 +437,10 @@ leak-clean)
   header "Withdrawing Route Leak"
   docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
-    -c "no ip route 193.0.0.0/21 blackhole" \
+    -c "no ip route 145.102.136.0/22 blackhole" \
     -c "router bgp 65000" \
     -c " address-family ipv4 unicast" \
-    -c "  no network 193.0.0.0/21" \
+    -c "  no network 145.102.136.0/22" \
     -c " exit-address-family" \
     -c "end" > /dev/null 2>&1 || true
   echo "  Triggering soft outbound reset to withdraw from edge..."
@@ -437,7 +448,7 @@ leak-clean)
     -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
   sleep 4
   step "Route table after withdrawal:"
-  $RAVEN_BIN --address $RAVEN_ADDR routes | grep "193.0" || echo "  (withdrawn — correct)"
+  $RAVEN_BIN --address $RAVEN_ADDR routes | grep "145.102" || echo "  (withdrawn — correct)"
   ok "Route leak withdrawn — path-suspect counter should drop back to 0."
   ;;
 
@@ -471,20 +482,186 @@ recommend)
   ok "Recommendations are heuristic — verify with your peers before registering objects."
   ;;
 
+# ── WEBHOOK LISTENER ─────────────────────────────────────────────────────────
+webhook-listen)
+  step "Starting webhook listener on port 9999..."
+  # Kill any existing webhook listener on port 9999
+  existing=$(lsof -ti tcp:9999 2>/dev/null || true)
+  if [ -n "$existing" ]; then
+      echo "  Stopping existing webhook listener (PID $existing)..."
+      kill "$existing" 2>/dev/null
+      sleep 1
+  fi
+  python3 -c "
+import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers['Content-Length'])
+        body = self.rfile.read(length)
+        try:
+            parsed = json.loads(body)
+            print(json.dumps(parsed, indent=2))
+        except Exception:
+            print(body.decode())
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, fmt, *args):
+        pass  # suppress access log noise
+http.server.HTTPServer(('0.0.0.0', 9999), H).serve_forever()
+" &
+  sleep 1
+  if ! lsof -ti tcp:9999 &>/dev/null; then
+      echo "ERROR: webhook listener failed to start on port 9999"
+      exit 1
+  fi
+  echo "Webhook listener started (PID $!). Press Ctrl-C in this terminal to stop."
+  ;;
+
+# ── FLOWSPEC ─────────────────────────────────────────────────────────────────
+flowspec)
+  header "Flowspec Demo — Active Route Mitigation"
+  echo ""
+  echo "  Demonstrates the full Flowspec lifecycle:"
+  echo "  detect → dry-run rule → toggle live → GoBGP injection → withdraw"
+  echo ""
+
+  step "Injecting origin hijack to trigger Flowspec rule..."
+  bash "$0" hijack
+  sleep 3
+
+  step "Active Flowspec rules (dry-run — not yet injected into GoBGP):"
+  $RAVEN_BIN --address $RAVEN_ADDR flowspec list
+  echo ""
+
+  echo "  GoBGP RIB before toggle (should be empty):"
+  sudo docker exec clab-raven-demo-gobgp gobgp global rib -a ipv4-flowspec
+  echo ""
+
+  read -rp "  Toggle 192.0.2.0/24|drop to LIVE injection? [y/N] " answer
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    echo ""
+    step "Toggling 192.0.2.0/24|drop to LIVE..."
+    $RAVEN_BIN --address $RAVEN_ADDR flowspec toggle "192.0.2.0/24|drop"
+    echo ""
+
+    step "GoBGP RIB after toggle (Flowspec rule should be present):"
+    sudo docker exec clab-raven-demo-gobgp gobgp global rib -a ipv4-flowspec
+    echo ""
+
+    read -rp "  Withdraw rule and return to dry-run? [y/N] " answer2
+    if [[ "$answer2" =~ ^[Yy]$ ]]; then
+      echo ""
+      step "Withdrawing — returning to dry-run..."
+      $RAVEN_BIN --address $RAVEN_ADDR flowspec toggle "192.0.2.0/24|drop"
+      echo ""
+      step "GoBGP RIB after withdrawal (should be empty again):"
+      sudo docker exec clab-raven-demo-gobgp gobgp global rib -a ipv4-flowspec
+    fi
+  else
+    echo "  Skipped live injection — rule remains in dry-run."
+  fi
+
+  echo ""
+  step "Cleaning up hijack..."
+  bash "$0" hijack-clean
+  ;;
+
+# ── AUDIT ─────────────────────────────────────────────────────────────────────
+audit)
+  FORMAT=${2:-table}
+  header "RAVEN Security Audit — edge router 10.0.0.1"
+  $RAVEN_BIN --address $RAVEN_ADDR audit --router 10.0.0.1 --format "$FORMAT"
+  ;;
+
+# ── PHASE 3 ──────────────────────────────────────────────────────────────────
+phase3)
+  header "Phase 3: Active Response Demo"
+
+  step "Starting webhook listener..."
+  bash "$0" webhook-listen
+  sleep 1
+
+  echo ""
+  step "--- Baseline audit ---"
+  bash "$0" audit
+  sleep 2
+
+  echo ""
+  step "--- Injecting origin hijack ---"
+  bash "$0" hijack
+  sleep 5
+  alert ">>> Check webhook terminal for alert payload"
+  sleep 3
+
+  echo ""
+  step "--- Audit after hijack ---"
+  bash "$0" audit
+  sleep 2
+
+  echo ""
+  # ── Flowspec lifecycle ──────────────────────────────────────────
+  step "Flowspec rules (auto-generated in dry-run):"
+  $RAVEN_BIN --address $RAVEN_ADDR flowspec list
+  sleep 3
+
+  step "Toggling 192.0.2.0/24|drop to LIVE injection..."
+  $RAVEN_BIN --address $RAVEN_ADDR flowspec toggle "192.0.2.0/24|drop"
+  sleep 2
+
+  step "GoBGP RIB — Flowspec rule active:"
+  sudo docker exec clab-raven-demo-gobgp gobgp global rib -a ipv4-flowspec
+  sleep 3
+
+  step "Withdrawing — returning to dry-run..."
+  $RAVEN_BIN --address $RAVEN_ADDR flowspec toggle "192.0.2.0/24|drop"
+  sleep 2
+  ok "Flowspec lifecycle complete — inject, verify in GoBGP, withdraw."
+  sleep 2
+
+  echo ""
+  step "--- Cleaning hijack ---"
+  bash "$0" hijack-clean
+  sleep 3
+
+  echo ""
+  step "--- Injecting route leak ---"
+  bash "$0" leak
+  sleep 5
+  alert ">>> Check webhook terminal for path-suspect alert"
+  sleep 3
+
+  echo ""
+  step "--- Audit after leak ---"
+  bash "$0" audit
+  sleep 2
+
+  echo ""
+  step "--- Cleaning up ---"
+  bash "$0" leak-clean
+
+  echo ""
+  ok "=== Phase 3 demo complete ==="
+  ;;
+
 # ── HELP ─────────────────────────────────────────────────────────────────────
 *)
   echo ""
   echo "Usage: bash lab/demo-master.sh <command>"
   echo ""
-  echo "  setup         Start full stack (lab, Routinator, RAVEN, Prometheus, Grafana)"
-  echo "  down          Stop everything in one command"
-  echo "  baseline      Show clean route table"
-  echo "  hijack        Inject origin hijack scenario"
-  echo "  hijack-clean  Withdraw the hijack"
-  echo "  leak          Show route leak (ASPA) detection"
-  echo "  leak-clean    Withdraw the route leak"
-  echo "  whatif        Run what-if simulator"
-  echo "  recommend     Run ASPA recommender"
+  echo "  setup          Start full stack (lab, Routinator, RAVEN, Prometheus, Grafana)"
+  echo "  down           Stop everything in one command"
+  echo "  baseline       Show clean route table"
+  echo "  hijack         Inject origin hijack scenario"
+  echo "  hijack-clean   Withdraw the hijack"
+  echo "  leak           Show route leak (ASPA) detection"
+  echo "  leak-clean     Withdraw the route leak"
+  echo "  whatif         Run what-if simulator"
+  echo "  recommend      Run ASPA recommender"
+  echo "  webhook-listen Start webhook listener on port 9999 (background)"
+  echo "  flowspec       Full Flowspec lifecycle: hijack → dry-run rule →"
+  echo "                 toggle live → GoBGP injection → withdraw"
+  echo "  audit [fmt]    Security posture audit for edge router (fmt: table|json|markdown)"
+  echo "  phase3         Full Phase 3 active-response demo sequence"
   echo ""
   ;;
 

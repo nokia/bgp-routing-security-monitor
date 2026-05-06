@@ -26,6 +26,14 @@ topology:
         - configs/edge/frr.conf:/etc/frr/frr.conf
         - configs/edge/vtysh.conf:/etc/frr/vtysh.conf
 
+    gobgp:
+      kind: linux
+      image: jauderho/gobgp:latest
+      mgmt-ipv4: 172.20.20.10
+      binds:
+        - gobgp.conf:/etc/gobgp/gobgp.conf:ro
+      cmd: gobgpd -f /etc/gobgp/gobgp.conf
+
   links:
     - endpoints: ["internet:eth1", "upstream:eth1"]
     - endpoints: ["upstream:eth2", "edge:eth1"]

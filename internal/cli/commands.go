@@ -323,7 +323,16 @@ func apiGet(addr string, path string, params url.Values) (*http.Response, error)
 	if len(params) > 0 {
 		u += "?" + params.Encode()
 	}
-	resp, err := http.Get(u)
+	resp, err := http.Get(u) //nolint:noctx
+	if err != nil {
+		return nil, fmt.Errorf("connect to daemon at %s: %w\n  is 'raven serve' running?", addr, err)
+	}
+	return resp, nil
+}
+
+func apiPost(addr string, path string) (*http.Response, error) {
+	u := fmt.Sprintf("http://%s%s", addr, path)
+	resp, err := http.Post(u, "application/json", http.NoBody) //nolint:noctx
 	if err != nil {
 		return nil, fmt.Errorf("connect to daemon at %s: %w\n  is 'raven serve' running?", addr, err)
 	}

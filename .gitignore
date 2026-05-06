@@ -19,3 +19,9 @@ vendor/
 # Containerlab generated files
 lab/clab-raven-demo/
 raven-phase2b-install.sh
+
+# Customer-specific demo materials (not for public repo)
+lab/orange-demo.sh
+lab/orange-raven.yaml
+lab/orange-presenter-notes.md
+slides/

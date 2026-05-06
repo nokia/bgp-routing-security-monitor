@@ -25,6 +25,11 @@ service StatusService {
   rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
 }
 
+service AuditService {
+  // Run a read-only security posture audit for a specific router.
+  rpc AuditRouter(AuditRouterRequest) returns (AuditRouterResponse);
+}
+
 // ─── Route Messages ───
 
 message RouteFilter {
@@ -149,4 +154,38 @@ message ListPeersRequest {}
 
 message ListPeersResponse {
   repeated BMPPeerStatus peers = 1;
+}
+
+// ─── AuditRouter ───
+
+message AuditRouterRequest {
+  string router_id = 1; // router ID (IP address) to audit
+}
+
+message PeerAuditEntry {
+  string peer_addr = 1;
+  uint32 peer_asn = 2;
+  int32 total_routes = 3;
+  map<string, int32> posture_summary = 4;
+  double rov_coverage = 5;
+  double aspa_coverage = 6;
+}
+
+message OffenderEntry {
+  uint32 origin_asn = 1;
+  int32 count = 2;
+  string posture = 3;
+  repeated string prefixes = 4;
+}
+
+message AuditRouterResponse {
+  string router_id = 1;
+  int64 generated_at_unix = 2;
+  int32 total_routes = 3;
+  double rov_coverage = 4;
+  double aspa_coverage = 5;
+  map<string, int32> posture_summary = 6;
+  repeated PeerAuditEntry peers = 7;
+  repeated OffenderEntry top_offenders = 8;
+  repeated string recommendations = 9;
 }

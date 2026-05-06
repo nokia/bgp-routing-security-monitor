@@ -57,6 +57,8 @@ func init() {
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(newWhatIfCmd(&addr))
 	rootCmd.AddCommand(newASPACmd(&addr))
+	rootCmd.AddCommand(newAuditCmd(&addr))
+	rootCmd.AddCommand(newFlowspecCmd(&addr))
 }
 
 func initConfig() {

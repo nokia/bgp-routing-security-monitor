@@ -219,6 +219,14 @@ func (t *Table) WithdrawAllFromPeer(peerAddr netip.Addr) int {
 
 // ─── Query Methods ───
 
+// Get returns the route stored under the given key, or nil if not found.
+func (t *Table) Get(key types.RouteKey) *types.Route {
+	s := t.getShard(key)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.routes[key]
+}
+
 func (t *Table) GetByPrefix(prefix netip.Prefix) []*types.Route {
 	t.prefixMu.RLock()
 	keys, _ := t.prefixIdx.Get(prefix)
@@ -296,6 +304,44 @@ func (t *Table) Count() uint64 {
 		s.mu.RUnlock()
 	}
 	return total
+}
+
+// Snapshot returns all routes currently in the table.
+// Called by the serve shutdown sequence to persist state.
+func (t *Table) Snapshot() []*types.Route {
+	return t.All()
+}
+
+// Restore populates the table from a snapshot.
+// All restored routes have Stale=true so that the Event Engine
+// ignores them until a live BMP message confirms each one.
+func (t *Table) Restore(routes []*types.Route) {
+	for _, r := range routes {
+		cp := *r
+		cp.Stale = true
+		t.Insert(&cp)
+	}
+}
+
+// EvictStale removes all routes still marked Stale from the table.
+// Returns the number of routes evicted. Called once after
+// stale_eviction_timeout to purge unconfirmed snapshot entries.
+func (t *Table) EvictStale() int {
+	var toEvict []types.RouteKey
+	for i := range t.shards {
+		s := &t.shards[i]
+		s.mu.RLock()
+		for key, route := range s.routes {
+			if route.Stale {
+				toEvict = append(toEvict, key)
+			}
+		}
+		s.mu.RUnlock()
+	}
+	for _, key := range toEvict {
+		t.withdrawOne(key)
+	}
+	return len(toEvict)
 }
 
 // CountByPosture returns route counts grouped by security posture.

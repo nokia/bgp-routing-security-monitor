@@ -84,6 +84,20 @@ func (l *Listener) GetPeers() []Peer {
 	return result
 }
 
+// GetRouterStates returns the current BMP session state for every router
+// that has sent an Initiation message. Only up sessions appear (1=up);
+// sessions that disconnected are removed from the map by handleSession.
+func (l *Listener) GetRouterStates() map[string]int64 {
+	l.routerMu.RLock()
+	defer l.routerMu.RUnlock()
+
+	result := make(map[string]int64, len(l.routers))
+	for _, sysName := range l.routers {
+		result[sysName] = 1
+	}
+	return result
+}
+
 // handleSession processes a single BMP session (one TCP connection = one router).
 func (l *Listener) handleSession(ctx context.Context, conn net.Conn) {
 	defer conn.Close()

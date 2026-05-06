@@ -28,6 +28,12 @@ type Route struct {
 	ROV             ROVResult
 	ASPA            ASPAResult
 	SecurityPosture SecurityPosture
+
+	// Stale is set on routes restored from a snapshot. It is cleared
+	// when a live BMP Route Monitoring message confirms the route is
+	// still active. Stale routes are excluded from Event Engine
+	// evaluation.
+	Stale bool
 }
 
 // Withdrawal represents a BGP route withdrawal received via BMP.
@@ -199,6 +205,13 @@ type ASPAResult struct {
 	FailingHop *ASPAHop  // non-nil if State == Invalid
 	HopDetails []ASPAHop // per-hop breakdown
 	Procedure  ASPAProcedure
+}
+
+// ASPARecord is a snapshot-friendly representation of a validated ASPA object.
+// ProviderASNs is a sorted slice (not a map) for deterministic serialisation.
+type ASPARecord struct {
+	CustomerASN  uint32
+	ProviderASNs []uint32
 }
 
 // ─── Security Posture (§2.4.3) ───

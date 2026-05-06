@@ -1,0 +1,258 @@
+package events
+
+import (
+	"fmt"
+	"log/slog"
+	"net/netip"
+	"net/url"
+	"time"
+
+	"github.com/nokia/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia/bgp-routing-security-monitor/internal/flowspec"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+)
+
+// BuildEngine constructs an Engine from EventsConfig. It also returns every
+// flowspec.Manager created for flowspec actions; callers must start each
+// manager's Run goroutine scoped to the server context.
+// Returns a descriptive error (including the rule name) if any rule fails to parse.
+func BuildEngine(cfg config.EventsConfig, logger *slog.Logger) (*Engine, []*flowspec.Manager, error) {
+	rules := make([]*Rule, 0, len(cfg.Rules))
+	var managers []*flowspec.Manager
+	for _, rc := range cfg.Rules {
+		rule, ruleManagers, err := buildRule(rc, logger)
+		if err != nil {
+			return nil, nil, fmt.Errorf("rule %q: %w", rc.Name, err)
+		}
+		rules = append(rules, rule)
+		managers = append(managers, ruleManagers...)
+	}
+	return NewEngine(rules, logger), managers, nil
+}
+
+func buildRule(rc config.RuleConfig, logger *slog.Logger) (*Rule, []*flowspec.Manager, error) {
+	trigger, err := buildTrigger(rc.Trigger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("trigger: %w", err)
+	}
+
+	actions := make([]Action, 0, len(rc.Actions))
+	var managers []*flowspec.Manager
+	for i, ac := range rc.Actions {
+		action, mgr, err := buildAction(ac, logger)
+		if err != nil {
+			return nil, nil, fmt.Errorf("action[%d]: %w", i, err)
+		}
+		actions = append(actions, action)
+		if mgr != nil {
+			managers = append(managers, mgr)
+		}
+	}
+
+	var cooldown time.Duration
+	if rc.Cooldown != "" {
+		d, err := time.ParseDuration(rc.Cooldown)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid cooldown %q: %w", rc.Cooldown, err)
+		}
+		cooldown = d
+	}
+
+	return &Rule{
+		Name:        rc.Name,
+		Trigger:     trigger,
+		Actions:     actions,
+		Cooldown:    cooldown,
+		log:         logger.With("rule", rc.Name),
+		cooldownMap: make(map[string]time.Time),
+	}, managers, nil
+}
+
+func buildTrigger(tc config.TriggerConfig) (Trigger, error) {
+	switch tc.Type {
+	case "posture":
+		postures, err := parsePostures(tc.Postures)
+		if err != nil {
+			return nil, err
+		}
+		return &PostureTrigger{Postures: postures}, nil
+
+	case "posture_change":
+		postures, err := parsePostures(tc.Postures)
+		if err != nil {
+			return nil, err
+		}
+		return &PostureChangeTrigger{Postures: postures}, nil
+
+	case "prefix":
+		if tc.Prefix == "" {
+			return nil, fmt.Errorf("prefix trigger requires a non-empty prefix")
+		}
+		p, err := netip.ParsePrefix(tc.Prefix)
+		if err != nil {
+			return nil, fmt.Errorf("invalid prefix %q: %w", tc.Prefix, err)
+		}
+		return &PrefixTrigger{Supernet: p.Masked()}, nil
+
+	case "cache_unhealthy":
+		return &CacheUnhealthyTrigger{}, nil
+
+	case "compound":
+		if len(tc.Triggers) == 0 {
+			return nil, fmt.Errorf("compound trigger requires at least one sub-trigger")
+		}
+		if tc.Operator != "and" && tc.Operator != "or" {
+			return nil, fmt.Errorf("compound operator must be \"and\" or \"or\", got %q", tc.Operator)
+		}
+		subs := make([]Trigger, 0, len(tc.Triggers))
+		for i, sub := range tc.Triggers {
+			t, err := buildTrigger(sub)
+			if err != nil {
+				return nil, fmt.Errorf("sub-trigger[%d]: %w", i, err)
+			}
+			subs = append(subs, t)
+		}
+		return &CompoundTrigger{Op: tc.Operator, Triggers: subs}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown trigger type %q", tc.Type)
+	}
+}
+
+// buildAction constructs an Action from ActionConfig. For flowspec actions it
+// also returns the Manager that the caller must start (Run). For all other
+// action types the returned manager is nil.
+func buildAction(ac config.ActionConfig, logger *slog.Logger) (Action, *flowspec.Manager, error) {
+	switch ac.Type {
+	case "log":
+		level := ac.Level
+		if level == "" {
+			level = "info"
+		}
+		return &LogAction{level: level, log: logger}, nil, nil
+
+	case "webhook":
+		if ac.URL == "" {
+			return nil, nil, fmt.Errorf("webhook action requires a non-empty url")
+		}
+		if _, err := url.ParseRequestURI(ac.URL); err != nil {
+			return nil, nil, fmt.Errorf("webhook action url %q: %w", ac.URL, err)
+		}
+		timeout := 5 * time.Second
+		if ac.Timeout != "" {
+			d, err := time.ParseDuration(ac.Timeout)
+			if err != nil {
+				return nil, nil, fmt.Errorf("webhook action timeout %q: %w", ac.Timeout, err)
+			}
+			if d <= 0 {
+				return nil, nil, fmt.Errorf("webhook action timeout must be > 0")
+			}
+			timeout = d
+		}
+		maxAttempts := 3
+		if ac.MaxAttempts != 0 {
+			if ac.MaxAttempts < 1 {
+				return nil, nil, fmt.Errorf("webhook action max_attempts must be >= 1")
+			}
+			maxAttempts = ac.MaxAttempts
+		}
+		return newWebhookAction(ac.URL, ac.Secret, maxAttempts, timeout, ac.Headers, logger), nil, nil
+
+	case "flowspec":
+		mgr, ttl, action, err := buildFlowspecManager(ac, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &FlowspecAction{manager: mgr, ttl: ttl, action: action}, mgr, nil
+
+	default:
+		return nil, nil, fmt.Errorf("unknown action type %q", ac.Type)
+	}
+}
+
+func buildFlowspecManager(ac config.ActionConfig, logger *slog.Logger) (*flowspec.Manager, time.Duration, flowspec.FlowspecRuleAction, error) {
+	ttl := time.Hour
+	if ac.TTL != "" {
+		d, err := time.ParseDuration(ac.TTL)
+		if err != nil {
+			return nil, 0, "", fmt.Errorf("flowspec action ttl %q: %w", ac.TTL, err)
+		}
+		if d <= 0 {
+			return nil, 0, "", fmt.Errorf("flowspec action ttl must be > 0")
+		}
+		ttl = d
+	}
+
+	reaperInterval := 30 * time.Second
+	if ac.ReaperInterval != "" {
+		d, err := time.ParseDuration(ac.ReaperInterval)
+		if err != nil {
+			return nil, 0, "", fmt.Errorf("flowspec action reaper_interval %q: %w", ac.ReaperInterval, err)
+		}
+		if d <= 0 {
+			return nil, 0, "", fmt.Errorf("flowspec action reaper_interval must be > 0")
+		}
+		reaperInterval = d
+	}
+
+	approvalTimeout := 10 * time.Second
+	if ac.ApprovalTimeout != "" {
+		d, err := time.ParseDuration(ac.ApprovalTimeout)
+		if err != nil {
+			return nil, 0, "", fmt.Errorf("flowspec action approval_timeout %q: %w", ac.ApprovalTimeout, err)
+		}
+		if d <= 0 {
+			return nil, 0, "", fmt.Errorf("flowspec action approval_timeout must be > 0")
+		}
+		approvalTimeout = d
+	}
+
+	action := flowspec.FlowspecActionDrop
+	if ac.RuleAction != "" {
+		switch flowspec.FlowspecRuleAction(ac.RuleAction) {
+		case flowspec.FlowspecActionDrop, flowspec.FlowspecActionRateLimit:
+			action = flowspec.FlowspecRuleAction(ac.RuleAction)
+		default:
+			return nil, 0, "", fmt.Errorf("flowspec action rule_action %q: must be \"drop\" or \"rate-limit\"", ac.RuleAction)
+		}
+	}
+
+	maxRules := 100
+	if ac.MaxRules != 0 {
+		maxRules = ac.MaxRules
+	}
+
+	mgr, err := flowspec.NewManager(flowspec.ManagerConfig{
+		GoBGPAddress:    ac.GoBGPAddress,
+		MaxRules:        maxRules,
+		DefaultTTL:      ttl,
+		DefaultAction:   action,
+		DryRun:          ac.DryRun,
+		ReaperInterval:  reaperInterval,
+		ApprovalWebhook: ac.ApprovalWebhook,
+		ApprovalTimeout: approvalTimeout,
+	}, logger)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("flowspec manager: %w", err)
+	}
+
+	return mgr, ttl, action, nil
+}
+
+func parsePostures(ss []string) ([]types.SecurityPosture, error) {
+	postures := make([]types.SecurityPosture, 0, len(ss))
+	for _, s := range ss {
+		switch types.SecurityPosture(s) {
+		case types.PostureSecured,
+			types.PostureOriginOnly,
+			types.PosturePathSuspect,
+			types.PosturePathOnly,
+			types.PostureUnverified,
+			types.PostureOriginInvalid:
+			postures = append(postures, types.SecurityPosture(s))
+		default:
+			return nil, fmt.Errorf("unknown posture %q", s)
+		}
+	}
+	return postures, nil
+}

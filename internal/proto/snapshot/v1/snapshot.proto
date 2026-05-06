@@ -1,0 +1,46 @@
+syntax = "proto3";
+package snapshot.v1;
+option go_package = "github.com/nokia/bgp-routing-security-monitor/internal/snapshot/v1;snapshotv1";
+
+// RouteSnapshot is the full Route Table snapshot written on shutdown.
+message RouteSnapshot {
+  int64  snapshot_time_unix = 1;  // unix nano
+  string raven_version      = 2;
+  repeated RouteRecord routes = 3;
+}
+
+message RouteRecord {
+  string   prefix        = 1;   // netip.Prefix.String()
+  string   peer_addr     = 2;   // netip.Addr.String()
+  uint32   peer_asn      = 3;
+  string   router_id     = 4;
+  repeated uint32 as_path = 5;
+  uint32   origin_asn    = 6;
+  string   next_hop      = 7;
+  int64    timestamp_unix = 8;  // unix nano
+  string   rib_type      = 9;   // "pre-policy" | "post-policy" | "loc-rib"
+  string   rov_state     = 10;
+  string   aspa_state    = 11;
+  string   posture       = 12;
+  bool     stale         = 13;
+}
+
+// RPKISnapshot is the VRP + ASPA store snapshot.
+message RPKISnapshot {
+  int64  snapshot_time_unix = 1;
+  string raven_version      = 2;
+  uint32 rtr_serial         = 3;  // RTR serial at snapshot time
+  repeated VRPRecord  vrps  = 4;
+  repeated ASPARecord aspas = 5;
+}
+
+message VRPRecord {
+  string prefix    = 1;
+  uint32 asn       = 2;
+  uint32 max_length = 3;
+}
+
+message ASPARecord {
+  uint32          customer_asn  = 1;
+  repeated uint32 provider_asns = 2;
+}

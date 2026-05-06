@@ -15,10 +15,9 @@ jobs:
         with:
           go-version: "1.25.0"
           cache: false
-      - run: go mod download
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.1.6
+          version: v2.4.0
   test:
     runs-on: ubuntu-latest
     steps:

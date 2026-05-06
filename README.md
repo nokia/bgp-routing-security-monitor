@@ -35,7 +35,12 @@ raven routes --posture origin-invalid
 | **Combined Posture** | Secured / Origin-Only / Path-Suspect / Unverified / Origin-Invalid |
 | **What-If** | Simulate impact of reject-invalid or ASPA enforcement |
 | **ASPA Recommender** | Suggest ASPA objects based on observed AS_PATHs |
+| **Event Engine** | Trigger webhooks and Flowspec rules on posture changes |
+| **Flowspec** | Automated mitigation — detect, generate, inject, expire via GoBGP |
+| **raven audit** | Read-only security posture report per router |
+| **Warm-start** | Snapshot and restore route table across restarts |
 | **Prometheus** | `/metrics` endpoint for Grafana dashboards |
+| **OpenTelemetry** | OTLP metrics export alongside Prometheus |
 | **Single Binary** | Zero dependencies — download and run |
 
 ## Documentation

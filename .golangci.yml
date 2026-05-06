@@ -5,6 +5,8 @@ linters:
     - govet
     - staticcheck
     - unused
+formatters:
+  enable:
     - gofmt
 issues:
   max-issues-per-linter: 50

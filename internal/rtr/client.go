@@ -238,16 +238,18 @@ func (c *Client) runSession(ctx context.Context) error {
 			c.log.Error("RTR error report from cache", "error_text", errMsg)
 
 			// Version negotiation fallback: 2 → 1 → 0
-			if c.protoVersion == 2 {
+			switch c.protoVersion {
+			case 2:
 				c.log.Info("falling back to RTR protocol version 1")
 				c.protoVersion = 1
 				return fmt.Errorf("cache sent error report (trying version 1): %s", errMsg)
-			} else if c.protoVersion == 1 {
+			case 1:
 				c.log.Info("falling back to RTR protocol version 0")
 				c.protoVersion = 0
 				return fmt.Errorf("cache sent error report (trying version 0): %s", errMsg)
+			default:
+				return fmt.Errorf("cache sent error report: %s", errMsg)
 			}
-			return fmt.Errorf("cache sent error report: %s", errMsg)
 
 		default:
 			c.log.Debug("unknown RTR PDU type", "type", pduType)

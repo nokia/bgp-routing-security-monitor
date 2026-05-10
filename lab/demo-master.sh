@@ -163,7 +163,13 @@ setup)
   pkill -f "raven serve" 2>/dev/null || true
   sleep 2
   check_stale_raven
-  $RAVEN_BIN serve --config ../raven.yaml > /tmp/raven.log 2>&1 &
+  if [ -f "../raven.local.yaml" ]; then
+    RAVEN_CONFIG="../raven.local.yaml"
+  else
+    RAVEN_CONFIG="../raven.yaml"
+  fi
+  echo "Using config: $RAVEN_CONFIG"
+  $RAVEN_BIN serve --config $RAVEN_CONFIG > /tmp/raven.log 2>&1 &
 
   # Wait for RTR sync (VRPs loaded) before checking routes
   echo "  Waiting for RAVEN to sync with Routinator..."

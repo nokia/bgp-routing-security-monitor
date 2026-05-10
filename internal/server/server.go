@@ -34,6 +34,9 @@ import (
 // checking. Set at build time via -ldflags "-X ...server.Version=v1.2.3".
 var Version = "dev"
 
+// DefaultAPIListen is the address the JSON API server binds to.
+const DefaultAPIListen = ":11020"
+
 // Server is the top-level RAVEN daemon that owns all subsystems.
 type Server struct {
 	cfg         *config.Config
@@ -306,7 +309,7 @@ func (s *Server) Run() error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := s.apiSrv.Start(ctx, ":11020"); err != nil {
+		if err := s.apiSrv.Start(ctx, DefaultAPIListen); err != nil {
 			s.log.Error("API server failed", "error", err)
 		}
 	}()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,12 +32,48 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("config: %w", err)
 		}
 
+		// Pre-flight: bind each configured listen address briefly to fail
+		// fast with one clear message instead of three mid-startup bind
+		// errors from BMP, API, and Prometheus goroutines.
+		ports := []string{cfg.BMP.Listen, server.DefaultAPIListen}
+		if cfg.Outputs.Prometheus != nil {
+			ports = append(ports, cfg.Outputs.Prometheus.Listen)
+		}
+		if err := preflightPortCheck(ports); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+
 		demo, _ := cmd.Flags().GetBool("demo")
 
 		srv := server.New(cfg, log)
 		srv.SetDemoMode(demo)
 		return srv.Run()
 	},
+}
+
+// preflightPortCheck attempts to bind each listen address briefly and
+// releases it. Returns a single human-readable error naming the first
+// port already in use; nil if all ports are free.
+func preflightPortCheck(addrs []string) error {
+	for _, addr := range addrs {
+		if addr == "" {
+			continue
+		}
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			display := addr
+			if _, port, splitErr := net.SplitHostPort(addr); splitErr == nil && port != "" {
+				display = port
+			}
+			return fmt.Errorf(
+				"ERROR: port %s already in use — is another raven serve running?\n"+
+					"   Run: pkill -f 'raven serve' && sleep 2",
+				display)
+		}
+		_ = ln.Close()
+	}
+	return nil
 }
 
 // ─── version ───

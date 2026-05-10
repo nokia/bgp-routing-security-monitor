@@ -25,14 +25,14 @@ events:
   rules:
     - name: "alert-origin-invalid"
       trigger:
-        type: posture_change
+        type: posture
         postures: ["origin-invalid"]
       cooldown: 60s
       actions:
         - type: log
           level: warn
         - type: webhook
-          url: "https://hooks.example.com/raven"
+          url: "http://localhost:9999"
           max_attempts: 2
           timeout: 3s
         - type: flowspec
@@ -45,13 +45,13 @@ events:
 
     - name: "alert-route-leak"
       trigger:
-        type: posture_change
+        type: posture
         postures: ["path-suspect"]
       cooldown: 60s
       actions:
         - type: log
           level: warn
         - type: webhook
-          url: "https://hooks.example.com/raven"
+          url: "http://localhost:9999"
           max_attempts: 2
           timeout: 3s

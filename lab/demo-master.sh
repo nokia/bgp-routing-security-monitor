@@ -61,6 +61,22 @@ wait_for_frr() {
   echo " ready"
 }
 
+# ── stale-process guard ─────────────────────────────────────────────────────
+# A leftover 'raven serve' from a previous demo run will hold ports 11019,
+# 11020, and 9595, causing the next setup to crash mid-startup with confusing
+# bind errors. Detect and refuse early.
+check_stale_raven() {
+  local pids
+  pids=$(pgrep -f "raven serve" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    echo "ERROR: stale 'raven serve' process detected (PID: $(echo "$pids" | tr '\n' ' '))"
+    echo "       This will cause port conflicts (11019/11020/9595) on startup."
+    echo "       Run: ./demo-master.sh reset"
+    echo "       (or manually: pkill -f 'raven serve' && sleep 2)"
+    exit 1
+  fi
+}
+
 # ── get the WSL host IP that Docker containers can reach ─────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 CMD="${1:-help}"
@@ -71,10 +87,25 @@ case "$CMD" in
 setup)
   header "RAVEN Demo Setup"
 
+  if ! curl -s http://localhost:8323/api/v1/status | grep -q vrps; then
+    warn "Routinator is not ready. Routes will not be annotated until sync completes."
+    warn "Start with: routinator server --config ~/.routinator.conf &"
+    warn "Cold start takes ~4 minutes. Warm start (if cache exists) takes ~13 seconds."
+  fi
+
   # Add to the top of the setup case, before containerlab deploy
   echo "▶ Building RAVEN binary..."
   (cd "$(dirname "$0")/.." && make build)
   echo "✓ RAVEN binary up to date"
+
+  # ── Kill any stale raven before deploy so ports 11019/11020/9595 are free ──
+  # Two passes with a brief pause between them: the first SIGTERM gives raven
+  # a chance to release sockets cleanly, the second sweeps anything that
+  # ignored it.
+  step "Clearing any stale 'raven serve' processes..."
+  pkill -f "raven serve" 2>/dev/null || true
+  sleep 1
+  pkill -f "raven serve" 2>/dev/null || true
 
   # ── Containerlab ──
   step "Starting Containerlab topology..."
@@ -90,6 +121,28 @@ setup)
   wait_for_frr clab-raven-demo-internet
   wait_for_frr clab-raven-demo-upstream
   wait_for_frr clab-raven-demo-edge
+
+  # Remove hijack artifacts
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
+    -c "end" 2>/dev/null || true
+
+  # Remove leak artifacts
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "no ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
+    -c "end" 2>/dev/null || true
+
+  # Remove internet router hijack announcement
+  docker exec clab-raven-demo-internet vtysh \
+    -c "configure terminal" \
+    -c "no ip route 192.0.2.0/24 blackhole" \
+    -c "router bgp 2121" \
+    -c " address-family ipv4 unicast" \
+    -c "  no network 192.0.2.0/24" \
+    -c " exit-address-family" \
+    -c "end" 2>/dev/null || true
 
   # ── Routinator ──
   step "Starting Routinator..."
@@ -109,6 +162,7 @@ setup)
   step "Starting RAVEN daemon..."
   pkill -f "raven serve" 2>/dev/null || true
   sleep 2
+  check_stale_raven
   $RAVEN_BIN serve --config ../raven.yaml > /tmp/raven.log 2>&1 &
 
   # Wait for RTR sync (VRPs loaded) before checking routes
@@ -302,6 +356,63 @@ down)
   ok "All done."
   ;;
 
+# ── RESET — kill stale raven and verify ports are free ──────────────────────
+reset)
+  header "Resetting RAVEN State"
+
+  step "Killing any running 'raven serve'..."
+  pkill -f "raven serve" 2>/dev/null || true
+  sleep 1
+  pkill -f "raven serve" 2>/dev/null || true
+  sleep 2
+
+  step "Checking ports 11019, 11020, 9595..."
+  in_use=()
+  for port in 11019 11020 9595; do
+    if ss -tlnp 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"; then
+      in_use+=("$port")
+    fi
+  done
+
+  if [ "${#in_use[@]}" -eq 0 ]; then
+    ok "Ports clear — ready to restart"
+  else
+    warn "WARNING: ports still in use: ${in_use[*]}"
+    echo "       Identify the holder with: ss -tlnp | grep -E ':(11019|11020|9595)\b'"
+  fi
+
+  # Remove hijack artifacts
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
+    -c "end" 2>/dev/null || true
+
+  # Remove leak artifacts
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "no ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
+    -c "end" 2>/dev/null || true
+
+  # Remove internet router hijack announcement
+  docker exec clab-raven-demo-internet vtysh \
+    -c "configure terminal" \
+    -c "no ip route 192.0.2.0/24 blackhole" \
+    -c "router bgp 2121" \
+    -c " address-family ipv4 unicast" \
+    -c "  no network 192.0.2.0/24" \
+    -c " exit-address-family" \
+    -c "end" 2>/dev/null || true
+
+  # Soft reset all BGP sessions to propagate cleanup
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "clear ip bgp * soft" 2>/dev/null || true
+  docker exec clab-raven-demo-internet vtysh \
+    -c "clear ip bgp * soft" 2>/dev/null || true
+
+  echo ""
+  echo "  Next: ./demo-master.sh setup"
+  ;;
+
 # ── BASELINE ─────────────────────────────────────────────────────────────────
 baseline)
   header "Baseline — Clean Route Table"
@@ -367,6 +478,12 @@ hijack-clean)
     -c " address-family ipv4 unicast" \
     -c "  no network 192.0.2.0/24" \
     -c " exit-address-family" \
+    -c "end"
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
+    -c "do clear ip bgp 10.0.0.2 soft out" \
+    -c "do clear ip bgp 10.0.1.1 soft out" \
     -c "end"
   sleep 4
   step "Route table after withdrawal:"

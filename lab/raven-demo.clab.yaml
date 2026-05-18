@@ -26,6 +26,14 @@ topology:
         - configs/edge/frr.conf:/etc/frr/frr.conf
         - configs/edge/vtysh.conf:/etc/frr/vtysh.conf
 
+    attacker:
+      kind: linux
+      image: quay.io/frrouting/frr:10.2.5
+      binds:
+        - configs/attacker/daemons:/etc/frr/daemons
+        - configs/attacker/frr.conf:/etc/frr/frr.conf
+        - configs/attacker/vtysh.conf:/etc/frr/vtysh.conf
+
     gobgp:
       kind: linux
       image: jauderho/gobgp:latest
@@ -37,3 +45,5 @@ topology:
   links:
     - endpoints: ["internet:eth1", "upstream:eth1"]
     - endpoints: ["upstream:eth2", "edge:eth1"]
+    - endpoints: ["upstream:eth3", "attacker:eth1"]
+    - endpoints: ["edge:eth2", "attacker:eth2"]

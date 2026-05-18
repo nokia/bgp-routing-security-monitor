@@ -30,6 +30,7 @@ else
 fi
 RAVEN_ADDR="localhost:11020"
 EDGE_CONTAINER="clab-raven-demo-edge"
+ATTACKER_CONTAINER="clab-raven-demo-attacker"
 GRAFANA_URL="http://localhost:3000/d/raven-security-posture"
 
 # ── colours ──────────────────────────────────────────────────────────────────
@@ -128,6 +129,11 @@ setup)
     -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
     -c "end" 2>/dev/null || true
 
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "clear ip bgp * soft out" 2>/dev/null || true
+  echo "  Waiting for BGP to converge after cleanup..."
+  sleep 5
+
   # Remove leak artifacts
   docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
@@ -148,7 +154,11 @@ setup)
   step "Starting Routinator..."
   pkill -x routinator 2>/dev/null || true
   sleep 1
-  routinator server > /tmp/routinator.log 2>&1 &
+  # --enable-aspa is required for Routinator to fetch and serve ASPA objects
+  # over RTR v2. Without it, AS2121's ASPA record (provider: AS3333) is
+  # silently dropped and the route-leak scenario shows ASPA:Unknown instead
+  # of ASPA:Invalid.
+  routinator --enable-aspa server > /tmp/routinator.log 2>&1 &
   echo "  Waiting for Routinator to sync (up to 60s)..."
   for i in $(seq 1 12); do
     if curl -s http://127.0.0.1:8323/api/v1/status 2>/dev/null | grep -q '"vrpsTotal"'; then
@@ -157,6 +167,30 @@ setup)
     sleep 5; echo -n "."
   done
   echo ""
+
+  # Verify AS2121 ASPA is present — without it the route-leak scenario
+  # cannot show path-suspect. If missing, Routinator hasn't synced yet,
+  # was started without --enable-aspa, or the global RPKI fetch is still
+  # in progress.
+  step "Verifying AS2121 ASPA record is loaded..."
+  ASPA_RESULT=$(curl -s http://127.0.0.1:8323/api/v1/aspas 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    aspas = d.get('aspas', [])
+    match = [a for a in aspas if a.get('customer') == 2121]
+    print('AS2121 ASPA:', match[0] if match else 'NOT FOUND')
+except Exception as e:
+    print('AS2121 ASPA: error parsing response:', e)
+" 2>/dev/null || echo "AS2121 ASPA: query failed")
+  echo "  $ASPA_RESULT"
+  if echo "$ASPA_RESULT" | grep -q 'NOT FOUND\|error\|failed'; then
+    warn "AS2121 ASPA not yet available — the route-leak scenario will show"
+    warn "ASPA:Unknown instead of ASPA:Invalid. Wait for Routinator's RRDP"
+    warn "fetch to complete, or confirm 'routinator --enable-aspa server' is running."
+  else
+    ok "AS2121 ASPA present — route-leak will resolve to path-suspect."
+  fi
 
   # ── RAVEN — start AFTER lab is converged for a clean table dump ──
   step "Starting RAVEN daemon..."
@@ -218,6 +252,15 @@ setup)
   else
     ok "ROUTE-LEAK route-map installed on upstream"
   fi
+
+  # EDGE-HIJACK-PREFIX is created by the route-map block above so seq 20 has a
+  # prefix-list to reference, but at baseline it must be empty — otherwise
+  # 10.10.0.0/24 gets AS65001 prepended and shows origin-invalid before any
+  # hijack scenario runs. The hijack) case re-adds the entry during injection.
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
+    -c "end"
 
   # Trigger a soft outbound reset so upstream resends all routes to edge
   # with the newly applied ROUTE-LEAK route-map (updated AS-paths)
@@ -345,10 +388,9 @@ print(next(s['uid'] for s in sources if s['type']=='prometheus'))
   echo "  Metrics:    http://localhost:9595/metrics"
   echo ""
   echo "  Expected postures (baseline — 5 routes, path-suspect = 0):"
-  echo "    origin-only    → 100.64.0.0/24, 198.51.100.0/24, 203.0.113.0/24"
-  echo "    origin-invalid → 10.10.0.0/24  (permanent baseline)"
-  echo "    unverified     → 10.99.99.0/24 (no ROA)"
-  echo "    path-suspect   → (none at baseline — run 'leak' to inject)"
+  echo "    origin-only    → 100.64.0.0/24, 198.51.100.0/24, 203.0.113.0/24, 10.10.0.0/24"
+  echo "    unverified     → 10.99.99.0/24"
+  echo "    path-suspect   → (none at baseline)"
   ;;
 
 # ── DOWN — stop everything in one command ────────────────────────────────────
@@ -764,6 +806,345 @@ phase3)
 
   echo ""
   ok "=== Phase 3 demo complete ==="
+  ;;
+
+# ── HIJACK V2 (AS65099 attacker) ─────────────────────────────────────────────
+hijack-v2)
+  header "Attack Scenario — Origin Hijack via AS65099"
+
+  alert "INJECTING BGP ORIGIN HIJACK FROM ATTACKER (AS65099)"
+  echo ""
+  echo "  Prefix:             203.0.113.0/24"
+  echo "  Legitimate origin:  AS65001  (per ROA in Routinator)"
+  echo "  Hijacking router:   AS65099  (attacker — peers with both upstream and edge)"
+  echo ""
+  echo "  Method: attacker originates 203.0.113.0/24 directly. The route reaches"
+  echo "  RAVEN via BMP from upstream (AS65000) and edge (AS65001). Origin AS65099"
+  echo "  ≠ ROA origin AS65001 → ROV Invalid → origin-invalid posture."
+  echo ""
+
+  step "Route table BEFORE hijack:"
+  $RAVEN_BIN --address $RAVEN_ADDR routes | grep "203.0.113" || echo "  (legitimate origin only)"
+  echo ""
+
+  step "Injecting hijack from attacker (AS65099)..."
+  docker exec $ATTACKER_CONTAINER vtysh \
+    -c "configure terminal" \
+    -c "ip route 203.0.113.0/24 blackhole" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "network 203.0.113.0/24" \
+    -c "end"
+
+  echo "  Waiting 5s for BMP propagation..."
+  sleep 5
+
+  step "RAVEN detection — origin-invalid routes:"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --posture origin-invalid
+  echo ""
+
+  alert "HIJACK DETECTED — switch to Grafana: $GRAFANA_URL"
+  ;;
+
+# ── HIJACK V2 CLEAN ──────────────────────────────────────────────────────────
+hijack-v2-clean)
+  header "Withdrawing AS65099 Hijack"
+  docker exec $ATTACKER_CONTAINER vtysh \
+    -c "configure terminal" \
+    -c "no ip route 203.0.113.0/24 blackhole" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "no network 203.0.113.0/24" \
+    -c "end"
+  sleep 4
+  step "Route table after withdrawal:"
+  $RAVEN_BIN --address $RAVEN_ADDR routes | grep "203.0.113" || echo "  (withdrawn — correct)"
+  ok "Hijack withdrawn."
+  ;;
+
+# ── STEALTHY HIJACK ──────────────────────────────────────────────────────────
+stealthy)
+  header "Scenario 3 — Stealthy Hijack"
+
+  echo "  Mechanism: attacker (AS65099) announces 203.0.113.0/25 — a more"
+  echo "             specific of the legitimate AS65000 /24. The edge router"
+  echo "             accepts it (no ROV enforcement) and installs it in FIB."
+  echo "             RAVEN's BMP RIB from upstream still shows the clean /24."
+  echo "             Control plane looks fine — only data-plane probing reveals"
+  echo "             the divergence."
+  echo ""
+
+  step "Control plane BEFORE stealthy hijack (should look clean):"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 203.0.113.0/24
+  echo "  Control plane shows: CLEAN"
+  echo ""
+
+  step "Injecting stealthy /25 from attacker (AS65099)..."
+  docker exec clab-raven-demo-attacker vtysh \
+    -c "configure terminal" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "network 203.0.113.0/25" \
+    -c "end"
+  echo "  Waiting 5s for BGP/BMP propagation..."
+  sleep 5
+
+  step "Control plane AFTER stealthy hijack (legitimate /24 still looks clean):"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 203.0.113.0/24
+  echo "  Control plane: still shows legitimate /24 — looks clean"
+  echo ""
+
+  step "Running stealthy check (traceroute from inside edge container):"
+  echo "  Note: probing from inside clab-raven-demo-edge so traffic enters the"
+  echo "  BGP topology (the WSL2 host is not part of it). The query targets the"
+  echo "  clean /24 RIB entry — but data-plane forwarding LPMs onto the /25 and"
+  echo "  goes via the attacker."
+  echo ""
+  $RAVEN_BIN --address $RAVEN_ADDR check stealthy \
+    --prefix 203.0.113.0/24 \
+    --probe-via clab-raven-demo-edge
+  echo ""
+
+  read -p "  [ENTER to clean up]" _
+  docker exec clab-raven-demo-attacker vtysh \
+    -c "configure terminal" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "no network 203.0.113.0/25" \
+    -c "end"
+  ok "Stealthy hijack withdrawn."
+  ;;
+
+# ── STEALTHY CLEAN (no prompts) ──────────────────────────────────────────────
+stealthy-clean)
+  header "Withdrawing Stealthy Hijack"
+  docker exec clab-raven-demo-attacker vtysh \
+    -c "configure terminal" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "no network 203.0.113.0/25" \
+    -c "end" 2>/dev/null || true
+  ok "Stealthy hijack withdrawn."
+  ;;
+
+# ── RTR FAIL ─────────────────────────────────────────────────────────────────
+rtr-fail)
+  header "Scenario 4 — RTR Cache Failure"
+
+  step "Showing RAVEN RTR status before failure..."
+  $RAVEN_BIN --address $RAVEN_ADDR status
+  echo ""
+
+  alert "Taking Routinator offline..."
+  pkill -x routinator || true
+  sleep 3
+
+  step "RAVEN RTR status immediately after failure..."
+  $RAVEN_BIN --address $RAVEN_ADDR status
+  echo ""
+
+  echo "  Prometheus staleness metric:"
+  curl -s http://localhost:9595/metrics | grep raven_rtr | grep -v "^#"
+  echo ""
+
+  echo "  Note: RAVEN continues serving the last known RPKI state."
+  echo "        Alert fires when cache exceeds expire interval."
+  echo ""
+
+  echo -n "  Holding offline for 10s"
+  for i in 10 9 8 7 6 5 4 3 2 1; do
+    echo -n " $i"
+    sleep 1
+  done
+  echo ""
+
+  alert "Restoring Routinator..."
+  routinator --enable-aspa server >> /tmp/routinator.log 2>&1 &
+  sleep 15
+
+  step "RAVEN RTR status after restore..."
+  $RAVEN_BIN --address $RAVEN_ADDR status
+  echo ""
+
+  ok "RTR session restored."
+  ;;
+
+# ── LACNIC FULL DEMO SEQUENCE ────────────────────────────────────────────────
+lacnic)
+  header "LACNIC Demo — Full Sequence"
+
+  echo "  Ensure 'setup' has been run first."
+  sleep 3
+
+  step "Scenario 1 — Baseline"
+  $RAVEN_BIN --address $RAVEN_ADDR routes
+  echo ""
+  $RAVEN_BIN --address $RAVEN_ADDR status
+  echo ""
+  read -p "  [ENTER to continue to Scenario 2]" _
+
+  step "Scenario 2 — Origin Hijack (AS65099)"
+  alert "INJECTING BGP ORIGIN HIJACK FROM ATTACKER (AS65099)"
+  echo "  Prefix: 203.0.113.0/24 (legitimate origin AS65001) → hijacked by AS65099"
+  echo ""
+  docker exec $ATTACKER_CONTAINER vtysh \
+    -c "configure terminal" \
+    -c "ip route 203.0.113.0/24 blackhole" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "network 203.0.113.0/24" \
+    -c "end"
+  echo "  Waiting 5s for BMP propagation..."
+  sleep 5
+  step "RAVEN detection — origin-invalid routes:"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --posture origin-invalid
+  echo ""
+  read -p "  [ENTER to clean up and continue]" _
+  step "Withdrawing AS65099 hijack..."
+  docker exec $ATTACKER_CONTAINER vtysh \
+    -c "configure terminal" \
+    -c "no ip route 203.0.113.0/24 blackhole" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "no network 203.0.113.0/24" \
+    -c "end"
+  sleep 4
+  ok "Hijack withdrawn."
+  echo ""
+
+  step "Scenario 3 — Stealthy Hijack (Control/Data-Plane Divergence)"
+  echo "  Prefix: 203.0.113.0/25 (more-specific of legitimate AS65000 /24)"
+  echo "  Attacker AS65099 announces /25 — edge accepts it without ROV check,"
+  echo "  upstream's view (and RAVEN's BMP RIB for the /24) still looks clean."
+  echo "  Only data-plane probing reveals the divergence."
+  echo ""
+  step "Control plane BEFORE stealthy hijack:"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 203.0.113.0/24
+  echo ""
+  step "Injecting stealthy /25 from attacker (AS65099)..."
+  docker exec $ATTACKER_CONTAINER vtysh \
+    -c "configure terminal" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "network 203.0.113.0/25" \
+    -c "end"
+  echo "  Waiting 5s for propagation..."
+  sleep 5
+  step "Control plane AFTER stealthy hijack (still looks clean for /24):"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 203.0.113.0/24
+  echo ""
+  step "RAVEN stealthy check — traceroute from inside edge container:"
+  $RAVEN_BIN --address $RAVEN_ADDR check stealthy \
+    --prefix 203.0.113.0/24 \
+    --probe-via clab-raven-demo-edge
+  echo ""
+  alert "STEALTHY HIJACK DETECTED — control plane could not see this."
+  echo ""
+  read -p "  [ENTER to clean up and continue]" _
+  step "Withdrawing stealthy hijack..."
+  docker exec $ATTACKER_CONTAINER vtysh \
+    -c "configure terminal" \
+    -c "router bgp 65099" \
+    -c "address-family ipv4 unicast" \
+    -c "no network 203.0.113.0/25" \
+    -c "end"
+  sleep 4
+  ok "Stealthy hijack withdrawn."
+  echo ""
+
+  step "Scenario 4 — Route Leak (ASPA)"
+  echo "  Prefix: 193.0.0.0/21 (origin AS2121 / RIPE NCC)"
+  echo "  AS65000 not in AS2121 ASPA provider set → ASPA:Invalid → path-suspect"
+  echo ""
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "no route-map LEAK-INJECT" \
+    -c "no ip prefix-list LEAK-PREFIX" \
+    -c "end" > /dev/null 2>&1 || true
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "ip route 193.0.0.0/21 blackhole" \
+    -c "router bgp 65000" \
+    -c "address-family ipv4 unicast" \
+    -c "network 193.0.0.0/21" \
+    -c "neighbor 10.0.0.2 route-map LEAK-INJECT out" \
+    -c "exit-address-family" \
+    -c "end"
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "route-map LEAK-INJECT permit 10" \
+    -c "match ip address prefix-list LEAK-PREFIX" \
+    -c "set as-path prepend 2121" \
+    -c "exit" \
+    -c "route-map LEAK-INJECT permit 20" \
+    -c "exit" \
+    -c "ip prefix-list LEAK-PREFIX permit 193.0.0.0/21" \
+    -c "end"
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "clear ip bgp 10.0.0.2 soft out"
+  echo "  Waiting 5s for BMP propagation..."
+  sleep 5
+  step "RAVEN detection — 193.0.0.0/21:"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 193.0.0.0/21
+  echo ""
+  alert "ROUTE LEAK DETECTED — ASPA caught what ROV missed."
+  echo ""
+  read -p "  [ENTER to clean up and continue]" _
+  step "Withdrawing route leak..."
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "configure terminal" \
+    -c "no ip route 193.0.0.0/21 blackhole" \
+    -c "router bgp 65000" \
+    -c "address-family ipv4 unicast" \
+    -c "no network 193.0.0.0/21" \
+    -c "no neighbor 10.0.0.2 route-map LEAK-INJECT out" \
+    -c "exit-address-family" \
+    -c "no route-map LEAK-INJECT" \
+    -c "no ip prefix-list LEAK-PREFIX" \
+    -c "end"
+  docker exec clab-raven-demo-upstream vtysh \
+    -c "clear ip bgp 10.0.0.2 soft out"
+  sleep 4
+  ok "Route leak withdrawn."
+  echo ""
+
+  step "Scenario 5 — RTR Cache Failure"
+  step "Showing RAVEN RTR status before failure..."
+  $RAVEN_BIN --address $RAVEN_ADDR status
+  echo ""
+  alert "Taking Routinator offline..."
+  pkill -x routinator || true
+  sleep 3
+  step "RAVEN RTR status immediately after failure..."
+  $RAVEN_BIN --address $RAVEN_ADDR status
+  echo ""
+  echo "  Prometheus staleness metric:"
+  curl -s http://localhost:9595/metrics | grep raven_rtr | grep -v "^#"
+  echo ""
+  echo "  Note: RAVEN continues serving the last known RPKI state."
+  echo "        Alert fires when cache exceeds expire interval."
+  echo ""
+  echo -n "  Holding offline for 10s"
+  for i in 10 9 8 7 6 5 4 3 2 1; do
+    echo -n " $i"
+    sleep 1
+  done
+  echo ""
+  alert "Restoring Routinator..."
+  routinator --enable-aspa server >> /tmp/routinator.log 2>&1 &
+  sleep 5
+  step "RAVEN RTR status after restore..."
+  $RAVEN_BIN --address $RAVEN_ADDR status
+  echo ""
+  ok "RTR session restored."
+  echo ""
+  read -p "  [ENTER to continue to Scenario 6]" _
+
+  step "Scenario 6 — Audit Report"
+  $RAVEN_BIN --address $RAVEN_ADDR audit --router 10.0.0.1
+  echo ""
+
+  ok "LACNIC demo sequence complete."
   ;;
 
 # ── HELP ─────────────────────────────────────────────────────────────────────

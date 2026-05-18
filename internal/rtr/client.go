@@ -36,18 +36,18 @@ const rtrHeaderLen = 8
 
 // Client maintains an RTR session with a single RPKI validator cache.
 type Client struct {
-	address      string
-	vrpStore     *store.VRPStore
-	aspaStore    *store.ASPAStore
-	log          *slog.Logger
-	retryMin     time.Duration
-	retryMax     time.Duration
+	address         string
+	vrpStore        *store.VRPStore
+	aspaStore       *store.ASPAStore
+	log             *slog.Logger
+	retryMin        time.Duration
+	retryMax        time.Duration
 	hasReset        bool
-	fullSyncPending bool // true between Reset Query send and EndOfData receive
+	fullSyncPending bool  // true between Reset Query send and EndOfData receive
 	protoVersion    uint8 // RTR protocol version (0, 1, or 2)
-	onUpdate     func()
-	readyOnce    sync.Once
-	ready        chan struct{}
+	onUpdate        func()
+	readyOnce       sync.Once
+	ready           chan struct{}
 }
 
 // NewClient creates an RTR client that syncs VRPs into the given store.

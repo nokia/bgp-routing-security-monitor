@@ -292,7 +292,7 @@ func runProbes(target netip.Addr, count int, timeout time.Duration) ([]probeResu
 			results, terr := runTCPProbes(target, count, timeout)
 			if terr != nil {
 				return nil, true, fmt.Errorf(
-					"Probe failed: insufficient permissions. Run with sudo or grant CAP_NET_RAW to the raven binary.\n  (ICMP: %v) (TCP: %v)", err, terr)
+					"probe failed: insufficient permissions. Run with sudo or grant CAP_NET_RAW to the raven binary.\n  (ICMP: %v) (TCP: %v)", err, terr)
 			}
 			return results, true, nil
 		}

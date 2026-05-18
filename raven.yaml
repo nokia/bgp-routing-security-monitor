@@ -2,6 +2,7 @@ bmp:
   listen: "0.0.0.0:11019"
 
 rtr:
+  rtr-version: auto
   caches:
     - address: "localhost:3323"
       preference: 1

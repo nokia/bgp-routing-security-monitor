@@ -42,8 +42,9 @@ type Client struct {
 	log          *slog.Logger
 	retryMin     time.Duration
 	retryMax     time.Duration
-	hasReset     bool
-	protoVersion uint8 // RTR protocol version (0, 1, or 2)
+	hasReset        bool
+	fullSyncPending bool // true between Reset Query send and EndOfData receive
+	protoVersion    uint8 // RTR protocol version (0, 1, or 2)
 	onUpdate     func()
 	readyOnce    sync.Once
 	ready        chan struct{}
@@ -131,6 +132,7 @@ func (c *Client) runSession(ctx context.Context) error {
 	metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.Count()))
 
 	// Send Reset Query to get the full VRP set
+	c.fullSyncPending = true
 	if err := c.sendResetQuery(conn); err != nil {
 		return fmt.Errorf("send reset query: %w", err)
 	}
@@ -151,6 +153,13 @@ func (c *Client) runSession(ctx context.Context) error {
 		switch pduType {
 		case PDUCacheResponse:
 			c.log.Debug("cache response", "session_id", sessionID)
+			// If we're servicing a Reset Query, clear the stores so the
+			// incoming full snapshot replaces rather than appends. Without
+			// this, every reconnect doubles the VRP store size.
+			if c.fullSyncPending {
+				c.vrpStore.Clear()
+				c.aspaStore.Clear()
+			}
 
 		case PDUIPv4Prefix:
 			vrp, withdraw, err := c.parseIPv4Prefix(payload)
@@ -200,6 +209,7 @@ func (c *Client) runSession(ctx context.Context) error {
 			}
 			c.vrpStore.SetSerial(serial, sessionID)
 			c.vrpStore.RebuildIndex() // build index once after full sync
+			c.fullSyncPending = false
 			metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.Count()))
 			metrics.RTRLastSync.WithLabelValues(c.address).Set(float64(time.Now().Unix()))
 			c.log.Info("RTR sync complete",
@@ -229,6 +239,7 @@ func (c *Client) runSession(ctx context.Context) error {
 
 		case PDUCacheReset:
 			c.log.Warn("cache reset received, performing full sync")
+			c.fullSyncPending = true
 			if err := c.sendResetQuery(conn); err != nil {
 				return fmt.Errorf("send reset query after cache reset: %w", err)
 			}

@@ -59,6 +59,7 @@ func init() {
 	rootCmd.AddCommand(newASPACmd(&addr))
 	rootCmd.AddCommand(newAuditCmd(&addr))
 	rootCmd.AddCommand(newFlowspecCmd(&addr))
+	rootCmd.AddCommand(checkCmd)
 }
 
 func initConfig() {

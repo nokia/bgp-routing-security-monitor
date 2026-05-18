@@ -62,6 +62,19 @@ func (s *VRPStore) SetSerial(serial uint32, sessionID uint16) {
 	s.sessionID = sessionID
 }
 
+// Clear empties the store. Called at the start of a full RTR sync so the
+// incoming snapshot replaces rather than appends to the previous one. The
+// serial and session ID are also reset; they are repopulated on EndOfData.
+func (s *VRPStore) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vrps = nil
+	s.count = 0
+	s.serial = 0
+	s.sessionID = 0
+	s.byPrefix = make(map[string][]types.VRP)
+}
+
 // ReplaceAll atomically replaces the entire VRP set (used on RTR cache reset).
 func (s *VRPStore) ReplaceAll(vrps []types.VRP, serial uint32, sessionID uint16) {
 	s.mu.Lock()

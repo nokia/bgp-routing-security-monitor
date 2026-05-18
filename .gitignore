@@ -26,3 +26,7 @@ lab/orange-raven.yaml
 lab/orange-presenter-notes.md
 slides/
 raven.local.yaml
+lab/aspa-objects.csv
+lab/aspa-enriched.csv
+lab/enrich_aspa.py
+lab/test_cymru.py

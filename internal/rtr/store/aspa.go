@@ -107,6 +107,14 @@ func (s *ASPAStore) Count() int {
 	return len(s.records)
 }
 
+// Clear drops all ASPA records. Called at the start of a full RTR sync so
+// the incoming snapshot replaces rather than supplements the previous one.
+func (s *ASPAStore) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = make(map[uint32]*ASPARecord)
+}
+
 // Snapshot returns all ASPA records for persistence.
 // Provider sets are converted to sorted slices for deterministic serialisation.
 func (s *ASPAStore) Snapshot() []types.ASPARecord {

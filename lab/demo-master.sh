@@ -172,24 +172,29 @@ setup)
   # cannot show path-suspect. If missing, Routinator hasn't synced yet,
   # was started without --enable-aspa, or the global RPKI fetch is still
   # in progress.
-  step "Verifying AS2121 ASPA record is loaded..."
-  ASPA_RESULT=$(curl -s http://127.0.0.1:8323/api/v1/aspas 2>/dev/null | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    aspas = d.get('aspas', [])
-    match = [a for a in aspas if a.get('customer') == 2121]
-    print('AS2121 ASPA:', match[0] if match else 'NOT FOUND')
-except Exception as e:
-    print('AS2121 ASPA: error parsing response:', e)
-" 2>/dev/null || echo "AS2121 ASPA: query failed")
-  echo "  $ASPA_RESULT"
-  if echo "$ASPA_RESULT" | grep -q 'NOT FOUND\|error\|failed'; then
-    warn "AS2121 ASPA not yet available — the route-leak scenario will show"
-    warn "ASPA:Unknown instead of ASPA:Invalid. Wait for Routinator's RRDP"
-    warn "fetch to complete, or confirm 'routinator --enable-aspa server' is running."
-  else
-    ok "AS2121 ASPA present — route-leak will resolve to path-suspect."
+  step "Waiting for Routinator ASPA sync (AS2121)..."
+  ASPA_FOUND=0
+  for i in $(seq 1 24); do
+    ASPA_RESULT=$(curl -s http://127.0.0.1:8323/api/v1/aspas \
+      2>/dev/null)
+    if echo "$ASPA_RESULT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+aspas=d.get('aspas',[])
+match=[a for a in aspas if a.get('customer')==2121]
+sys.exit(0 if match else 1)
+" 2>/dev/null; then
+      ASPA_FOUND=1
+      ok "AS2121 ASPA record loaded."
+      break
+    fi
+    echo -n "  waiting ($i/24)..."
+    sleep 5
+  done
+  if [ $ASPA_FOUND -eq 0 ]; then
+    alert "AS2121 ASPA not found after 2 minutes."
+    alert "Route leak scenario will show ASPA:Unknown."
+    alert "Check: routinator --enable-aspa server is running"
   fi
 
   # ── RAVEN — start AFTER lab is converged for a clean table dump ──

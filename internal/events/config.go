@@ -39,7 +39,7 @@ func buildRule(rc config.RuleConfig, logger *slog.Logger) (*Rule, []*flowspec.Ma
 	actions := make([]Action, 0, len(rc.Actions))
 	var managers []*flowspec.Manager
 	for i, ac := range rc.Actions {
-		action, mgr, err := buildAction(ac, logger)
+		action, mgr, err := buildAction(ac, rc.Name, logger)
 		if err != nil {
 			return nil, nil, fmt.Errorf("action[%d]: %w", i, err)
 		}
@@ -94,6 +94,25 @@ func buildTrigger(tc config.TriggerConfig) (Trigger, error) {
 		}
 		return &PrefixTrigger{Supernet: p.Masked()}, nil
 
+	case "asn":
+		if len(tc.ASNs) == 0 {
+			return nil, fmt.Errorf("asn trigger requires at least one asn")
+		}
+		match := tc.ASNMatch
+		if match == "" {
+			match = "origin"
+		}
+		if match != "origin" && match != "path" {
+			return nil, fmt.Errorf("asn trigger asn_match must be \"origin\" or \"path\", got %q", match)
+		}
+		return &ASNTrigger{ASNs: tc.ASNs, Match: match}, nil
+
+	case "protected_asn":
+		if len(tc.ASNs) == 0 {
+			return nil, fmt.Errorf("protected_asn trigger requires at least one asn")
+		}
+		return &ProtectedASNTrigger{ASNs: tc.ASNs}, nil
+
 	case "cache_unhealthy":
 		return &CacheUnhealthyTrigger{}, nil
 
@@ -122,7 +141,7 @@ func buildTrigger(tc config.TriggerConfig) (Trigger, error) {
 // buildAction constructs an Action from ActionConfig. For flowspec actions it
 // also returns the Manager that the caller must start (Run). For all other
 // action types the returned manager is nil.
-func buildAction(ac config.ActionConfig, logger *slog.Logger) (Action, *flowspec.Manager, error) {
+func buildAction(ac config.ActionConfig, ruleName string, logger *slog.Logger) (Action, *flowspec.Manager, error) {
 	switch ac.Type {
 	case "log":
 		level := ac.Level
@@ -156,7 +175,7 @@ func buildAction(ac config.ActionConfig, logger *slog.Logger) (Action, *flowspec
 			}
 			maxAttempts = ac.MaxAttempts
 		}
-		return newWebhookAction(ac.URL, ac.Secret, maxAttempts, timeout, ac.Headers, logger), nil, nil
+		return newWebhookAction(ac.URL, ac.Secret, ruleName, maxAttempts, timeout, ac.Headers, logger), nil, nil
 
 	case "flowspec":
 		mgr, ttl, action, err := buildFlowspecManager(ac, logger)

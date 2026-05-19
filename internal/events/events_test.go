@@ -137,6 +137,267 @@ func TestPostureChangeTrigger(t *testing.T) {
 	}
 }
 
+// ─── TestASNTrigger ───
+
+func TestASNTrigger(t *testing.T) {
+	routeWith := func(path []uint32) *types.Route {
+		r := newRoute("10.0.0.0/24")
+		r.ASPath = path
+		return r
+	}
+
+	t.Run("origin mode", func(t *testing.T) {
+		trigger := &ASNTrigger{ASNs: []uint32{64501, 64502}, Match: "origin"}
+		tests := []struct {
+			name  string
+			event Event
+			want  bool
+		}{
+			{"origin ASN matches", Event{Route: routeWith([]uint32{65000, 64501})}, true},
+			{"origin ASN in list", Event{Route: routeWith([]uint32{65000, 64502})}, true},
+			{"origin ASN not in list", Event{Route: routeWith([]uint32{65000, 64503})}, false},
+			{"ASN in middle but not origin", Event{Route: routeWith([]uint32{64501, 65000})}, false},
+			{"empty AS path", Event{Route: routeWith(nil)}, false},
+			{"nil route", Event{Route: nil}, false},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := trigger.Matches(tc.event); got != tc.want {
+					t.Errorf("Matches() = %v, want %v", got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("path mode", func(t *testing.T) {
+		trigger := &ASNTrigger{ASNs: []uint32{64501}, Match: "path"}
+		tests := []struct {
+			name  string
+			event Event
+			want  bool
+		}{
+			{"ASN at origin", Event{Route: routeWith([]uint32{65000, 64501})}, true},
+			{"ASN in middle", Event{Route: routeWith([]uint32{64501, 65000})}, true},
+			{"ASN not in path", Event{Route: routeWith([]uint32{65000, 65001})}, false},
+			{"nil route", Event{Route: nil}, false},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := trigger.Matches(tc.event); got != tc.want {
+					t.Errorf("Matches() = %v, want %v", got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("default match is origin", func(t *testing.T) {
+		trigger := &ASNTrigger{ASNs: []uint32{64501}, Match: ""}
+		r := routeWith([]uint32{64501, 65000})
+		if trigger.Matches(Event{Route: r}) {
+			t.Error("expected no match: 64501 is not the origin ASN")
+		}
+		r2 := routeWith([]uint32{65000, 64501})
+		if !trigger.Matches(Event{Route: r2}) {
+			t.Error("expected match: 64501 is the origin ASN")
+		}
+	})
+}
+
+// ─── TestBuildEngineASN ───
+
+func TestBuildEngineASN(t *testing.T) {
+	t.Run("origin mode built correctly", func(t *testing.T) {
+		cfg := config.EventsConfig{Rules: []config.RuleConfig{{
+			Name: "my-asn-origin",
+			Trigger: config.TriggerConfig{
+				Type: "asn",
+				ASNs: []uint32{64501},
+			},
+			Actions: []config.ActionConfig{{Type: "log"}},
+		}}}
+		eng, _, err := BuildEngine(cfg, slog.Default())
+		if err != nil {
+			t.Fatalf("BuildEngine: %v", err)
+		}
+		tr, ok := eng.rules[0].Trigger.(*ASNTrigger)
+		if !ok {
+			t.Fatalf("expected *ASNTrigger, got %T", eng.rules[0].Trigger)
+		}
+		if tr.Match != "origin" {
+			t.Errorf("expected default match \"origin\", got %q", tr.Match)
+		}
+	})
+
+	t.Run("path mode built correctly", func(t *testing.T) {
+		cfg := config.EventsConfig{Rules: []config.RuleConfig{{
+			Name: "my-asn-path",
+			Trigger: config.TriggerConfig{
+				Type:     "asn",
+				ASNs:     []uint32{64501, 64502},
+				ASNMatch: "path",
+			},
+			Actions: []config.ActionConfig{{Type: "log"}},
+		}}}
+		eng, _, err := BuildEngine(cfg, slog.Default())
+		if err != nil {
+			t.Fatalf("BuildEngine: %v", err)
+		}
+		tr, ok := eng.rules[0].Trigger.(*ASNTrigger)
+		if !ok {
+			t.Fatalf("expected *ASNTrigger, got %T", eng.rules[0].Trigger)
+		}
+		if tr.Match != "path" {
+			t.Errorf("expected match \"path\", got %q", tr.Match)
+		}
+		if len(tr.ASNs) != 2 {
+			t.Errorf("expected 2 ASNs, got %d", len(tr.ASNs))
+		}
+	})
+
+	t.Run("empty asns rejected", func(t *testing.T) {
+		cfg := config.EventsConfig{Rules: []config.RuleConfig{{
+			Name:    "bad",
+			Trigger: config.TriggerConfig{Type: "asn"},
+			Actions: []config.ActionConfig{{Type: "log"}},
+		}}}
+		if _, _, err := BuildEngine(cfg, slog.Default()); err == nil {
+			t.Error("expected error for empty asns, got nil")
+		}
+	})
+
+	t.Run("invalid asn_match rejected", func(t *testing.T) {
+		cfg := config.EventsConfig{Rules: []config.RuleConfig{{
+			Name: "bad",
+			Trigger: config.TriggerConfig{
+				Type:     "asn",
+				ASNs:     []uint32{64501},
+				ASNMatch: "invalid",
+			},
+			Actions: []config.ActionConfig{{Type: "log"}},
+		}}}
+		if _, _, err := BuildEngine(cfg, slog.Default()); err == nil {
+			t.Error("expected error for invalid asn_match, got nil")
+		}
+	})
+}
+
+// ─── TestProtectedASNTrigger ───
+
+func TestProtectedASNTrigger(t *testing.T) {
+	vrp := func(asn uint32) types.VRP {
+		return types.VRP{
+			Prefix:    netip.MustParsePrefix("10.0.0.0/24"),
+			ASN:       asn,
+			MaxLength: 24,
+		}
+	}
+
+	routeInvalid := func(matchedVRPs []types.VRP) *types.Route {
+		r := newRoute("10.0.0.0/24")
+		r.ROV = types.ROVResult{State: types.ROVInvalid, MatchedVRPs: matchedVRPs}
+		return r
+	}
+
+	trigger := &ProtectedASNTrigger{ASNs: []uint32{3215}}
+
+	tests := []struct {
+		name  string
+		event Event
+		want  bool
+	}{
+		{
+			name: "protected ASN in MatchedVRPs fires",
+			event: Event{
+				Route:      routeInvalid([]types.VRP{vrp(3215)}),
+				NewPosture: types.PostureOriginInvalid,
+			},
+			want: true,
+		},
+		{
+			name: "protected ASN not in MatchedVRPs does not fire",
+			event: Event{
+				Route:      routeInvalid([]types.VRP{vrp(64999)}),
+				NewPosture: types.PostureOriginInvalid,
+			},
+			want: false,
+		},
+		{
+			name: "multiple VRPs, one matches",
+			event: Event{
+				Route:      routeInvalid([]types.VRP{vrp(64999), vrp(3215)}),
+				NewPosture: types.PostureOriginInvalid,
+			},
+			want: true,
+		},
+		{
+			name: "route is valid, not a hijack",
+			event: Event{
+				Route:      newRoute("10.0.0.0/24"),
+				NewPosture: types.PostureSecured,
+			},
+			want: false,
+		},
+		{
+			name: "route is unverified (no VRPs), not a hijack",
+			event: Event{
+				Route:      newRoute("10.0.0.0/24"),
+				NewPosture: types.PostureUnverified,
+			},
+			want: false,
+		},
+		{
+			name:  "nil route does not fire",
+			event: Event{Route: nil},
+			want:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := trigger.Matches(tc.event); got != tc.want {
+				t.Errorf("Matches() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// ─── TestBuildEngineProtectedASN ───
+
+func TestBuildEngineProtectedASN(t *testing.T) {
+	t.Run("built correctly from config", func(t *testing.T) {
+		cfg := config.EventsConfig{Rules: []config.RuleConfig{{
+			Name: "my-prefixes-hijacked",
+			Trigger: config.TriggerConfig{
+				Type: "protected_asn",
+				ASNs: []uint32{3215, 64501},
+			},
+			Actions: []config.ActionConfig{{Type: "log"}},
+		}}}
+		eng, _, err := BuildEngine(cfg, slog.Default())
+		if err != nil {
+			t.Fatalf("BuildEngine: %v", err)
+		}
+		tr, ok := eng.rules[0].Trigger.(*ProtectedASNTrigger)
+		if !ok {
+			t.Fatalf("expected *ProtectedASNTrigger, got %T", eng.rules[0].Trigger)
+		}
+		if len(tr.ASNs) != 2 {
+			t.Errorf("expected 2 ASNs, got %d", len(tr.ASNs))
+		}
+	})
+
+	t.Run("empty asns rejected", func(t *testing.T) {
+		cfg := config.EventsConfig{Rules: []config.RuleConfig{{
+			Name:    "bad",
+			Trigger: config.TriggerConfig{Type: "protected_asn"},
+			Actions: []config.ActionConfig{{Type: "log"}},
+		}}}
+		if _, _, err := BuildEngine(cfg, slog.Default()); err == nil {
+			t.Error("expected error for empty asns, got nil")
+		}
+	})
+}
+
 // ─── TestCooldown ───
 
 func TestCooldown(t *testing.T) {

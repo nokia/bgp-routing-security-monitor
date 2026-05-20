@@ -40,7 +40,7 @@ func makeWebhookEvent() Event {
 // fastWebhookAction creates a WebhookAction with a very short initial backoff
 // so retry tests complete quickly.
 func fastWebhookAction(rawURL string) *WebhookAction {
-	a := newWebhookAction(rawURL, "", 3, 5*time.Second, nil, slog.Default())
+	a := newWebhookAction(rawURL, "", "", 3, 5*time.Second, nil, slog.Default())
 	a.initialBackoff = time.Millisecond
 	return a
 }
@@ -169,7 +169,7 @@ func TestWebhookAction_HMACSignature(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := newWebhookAction(srv.URL, secret, 1, 5*time.Second, nil, slog.Default())
+	a := newWebhookAction(srv.URL, secret, "", 1, 5*time.Second, nil, slog.Default())
 	if err := a.Execute(context.Background(), event); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -192,5 +192,72 @@ func TestWebhookAction_DeadLetter(t *testing.T) {
 	}
 	if n := requests.Load(); n != 3 {
 		t.Errorf("expected 3 attempts, got %d", n)
+	}
+}
+
+func TestWebhookPayloadNewFields(t *testing.T) {
+	vrp := types.VRP{
+		Prefix:    netip.MustParsePrefix("10.0.0.0/24"),
+		ASN:       3215,
+		MaxLength: 24,
+	}
+	event := Event{
+		ID:        NewID(),
+		Timestamp: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+		Type:      EventTypePostureChange,
+		Route: &types.Route{
+			Prefix:   netip.MustParsePrefix("10.0.0.0/24"),
+			PeerAddr: netip.MustParseAddr("192.0.2.1"),
+			PeerASN:  65001,
+			ASPath:   []uint32{65001, 64001},
+			ROV: types.ROVResult{
+				State:       types.ROVInvalid,
+				MatchedVRPs: []types.VRP{vrp},
+			},
+			ASPA: types.ASPAResult{State: types.ASPAUnknown},
+		},
+		OldPosture: types.PostureSecured,
+		NewPosture: types.PostureOriginInvalid,
+	}
+
+	var got webhookPayload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := newWebhookAction(srv.URL, "", "alert-our-prefix-hijacked", 1, 5*time.Second, nil, slog.Default())
+	if err := a.Execute(context.Background(), event); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if got.RuleName != "alert-our-prefix-hijacked" {
+		t.Errorf("rule_name: got %q, want %q", got.RuleName, "alert-our-prefix-hijacked")
+	}
+	if got.OriginASN != 64001 {
+		t.Errorf("origin_asn: got %d, want 64001", got.OriginASN)
+	}
+	if len(got.ProtectedASNs) != 1 || got.ProtectedASNs[0] != 3215 {
+		t.Errorf("protected_asns: got %v, want [3215]", got.ProtectedASNs)
+	}
+}
+
+func TestWebhookPayloadProtectedASNsOmittedWhenEmpty(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := newWebhookAction(srv.URL, "", "my-rule", 1, 5*time.Second, nil, slog.Default())
+	if err := a.Execute(context.Background(), makeWebhookEvent()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if bytes.Contains(body, []byte("protected_asns")) {
+		t.Errorf("expected protected_asns to be omitted from JSON, but it was present")
 	}
 }

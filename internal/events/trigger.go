@@ -51,6 +51,59 @@ func (t *PrefixTrigger) Matches(event Event) bool {
 	return t.Supernet.Bits() <= p.Bits() && t.Supernet.Contains(p.Addr())
 }
 
+// ASNTrigger fires when the event's route involves one of the configured ASNs.
+// Match controls the scope: "origin" (default) checks only route.OriginASN();
+// "path" checks every ASN in the full AS path.
+type ASNTrigger struct {
+	ASNs  []uint32
+	Match string
+}
+
+// Matches returns true when the route involves one of the configured ASNs.
+func (t *ASNTrigger) Matches(event Event) bool {
+	if event.Route == nil {
+		return false
+	}
+	if t.Match == "path" {
+		for _, asn := range event.Route.ASPath {
+			if slices.Contains(t.ASNs, asn) {
+				return true
+			}
+		}
+		return false
+	}
+	// default: "origin"
+	return slices.Contains(t.ASNs, event.Route.OriginASN())
+}
+
+// ProtectedASNTrigger fires when a route's origin violates a VRP that names one
+// of the configured ASNs as the authorized originator. This detects prefix
+// hijacks: the hijacking route does not contain the protected ASN in its path,
+// but the covering VRP names it as the only authorized origin.
+//
+// It relies on ROV.MatchedVRPs populated by the validation engine before the
+// event is emitted — no VRP store access is needed at match time.
+type ProtectedASNTrigger struct {
+	ASNs []uint32
+}
+
+// Matches returns true when the route is origin-invalid and a covering VRP
+// authorises one of the protected ASNs for the route's prefix.
+func (t *ProtectedASNTrigger) Matches(event Event) bool {
+	if event.Route == nil {
+		return false
+	}
+	if event.NewPosture != types.PostureOriginInvalid {
+		return false
+	}
+	for _, vrp := range event.Route.ROV.MatchedVRPs {
+		if slices.Contains(t.ASNs, vrp.ASN) {
+			return true
+		}
+	}
+	return false
+}
+
 // CacheUnhealthyTrigger fires on EventTypeCacheUnhealthy events.
 type CacheUnhealthyTrigger struct{}
 

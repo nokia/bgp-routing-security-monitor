@@ -53,7 +53,7 @@ type TriggerConfig struct {
 	Type     string   `mapstructure:"type"`
 	Postures []string `mapstructure:"postures"`
 	Prefix   string   `mapstructure:"prefix"`
-	ASNs []uint32 `mapstructure:"asns"`
+	ASNs     []uint32 `mapstructure:"asns"`
 	// ASNMatch controls how the asn trigger matches: "origin" (default) checks
 	// only the last ASN in the AS path; "path" matches any ASN in the full path.
 	ASNMatch string `mapstructure:"asn_match"`

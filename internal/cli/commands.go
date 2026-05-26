@@ -46,7 +46,10 @@ var serveCmd = &cobra.Command{
 
 		demo, _ := cmd.Flags().GetBool("demo")
 
-		srv := server.New(cfg, log)
+		srv, err := server.New(cfg, log)
+		if err != nil {
+			return err
+		}
 		srv.SetDemoMode(demo)
 		return srv.Run()
 	},

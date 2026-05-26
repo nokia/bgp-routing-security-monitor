@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -63,7 +64,7 @@ type Server struct {
 }
 
 // New creates a new RAVEN server from the given config.
-func New(cfg *config.Config, log *slog.Logger) *Server {
+func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	routeCh := make(chan types.Route, 100_000)
 	vrpStore := store.NewVRPStore()
 	aspaStore := store.NewASPAStore() // ADD
@@ -71,11 +72,20 @@ func New(cfg *config.Config, log *slog.Logger) *Server {
 	engine := validation.NewEngine(vrpStore, aspaStore, table, log)
 	withdrawCh := make(chan types.Withdrawal, 10_000)
 
+	var bmpTLS *tls.Config
+	if cfg.BMP.TLS != nil {
+		built, err := bmp.BuildTLSConfig(cfg.BMP.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("BMP TLS: %w", err)
+		}
+		bmpTLS = built
+	}
+
 	srv := &Server{
 		cfg:         cfg,
 		log:         log,
 		table:       table,
-		bmpListen:   bmp.NewListener(cfg.BMP.Listen, routeCh, withdrawCh, log),
+		bmpListen:   bmp.NewListener(cfg.BMP.Listen, bmpTLS, routeCh, withdrawCh, log),
 		vrpStore:    vrpStore,
 		aspaStore:   aspaStore, // ADD
 		engine:      engine,
@@ -99,7 +109,7 @@ func New(cfg *config.Config, log *slog.Logger) *Server {
 	auditHandler := api.NewAuditHandler(table)
 	auditHandler.RegisterRoutes(srv.apiSrv.Mux())
 
-	return srv
+	return srv, nil
 }
 
 // SetDemoMode enables demo mode with test VRPs instead of live RTR.
@@ -192,7 +202,24 @@ func (s *Server) Run() error {
 			go func() {
 				defer wg.Done()
 				addr := cache.Address
-				client := rtr.NewClient(addr, s.vrpStore, s.aspaStore, s.log)
+				transport := cache.Transport
+				if transport == "" {
+					transport = "tcp"
+				}
+				var configVersion uint8
+				switch s.cfg.RTR.RTRVersion {
+				case "1":
+					configVersion = 1
+				case "2", "auto", "":
+					configVersion = 2
+				default:
+					configVersion = 2
+				}
+				client, err := rtr.NewClient(addr, transport, cache.TLS, s.vrpStore, s.aspaStore, configVersion, s.log)
+				if err != nil {
+					s.log.Error("failed to build RTR client", "cache", addr, "error", err)
+					return
+				}
 				client.SetOnUpdate(func() {
 					s.engine.RevalidateAll()
 					// Record last-sync time for StateReader/OTel.

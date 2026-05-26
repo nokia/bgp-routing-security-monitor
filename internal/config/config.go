@@ -131,6 +131,7 @@ type FlowspecActionConfig struct {
 
 type BMPConfig struct {
 	Listen string       `mapstructure:"listen"`
+	TLS    *TLSConfig   `mapstructure:"tls"`   // nil = plain TCP (default)
 	Kafka  *KafkaIngest `mapstructure:"kafka"` // Phase 4 — nil means embedded BMP receiver
 }
 

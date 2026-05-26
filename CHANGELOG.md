@@ -2,6 +2,40 @@
 
 All notable changes to RAVEN will be documented in this file.
 
+## [0.2.0] - 2026-05-26
+
+### Active Response (Phase 3)
+- Event Engine: configurable triggers on posture changes
+  (ROV state change, new route with specific posture,
+  RTR cache failure) with webhook HTTP POST and file
+  log actions
+- Flowspec lifecycle management: detect origin-invalid
+  route → generate Flowspec rule → inject via GoBGP →
+  monitor → expire after configurable TTL. Dry-run mode
+  and approval webhook supported.
+- `raven audit` — full security posture report for a
+  router: per-peer posture breakdown, ROV/ASPA coverage,
+  recommendations. Outputs table, JSON, or markdown.
+- `raven check stealthy` — detect stealthy BGP hijacks
+  by comparing BMP control-plane view against data-plane
+  forwarding via probes
+- Warm-start persistence: snapshot route table and RPKI
+  caches to disk on shutdown, restore on startup
+- OpenTelemetry OTLP metrics export alongside Prometheus
+
+### Transport Security
+- RTR-over-TLS: configure `transport: tls` and optional
+  CA cert under any RTR cache entry
+- BMP listener TLS: optional TLS termination on the BMP
+  listener with mutual TLS support
+
+### Bug Fixes
+- RTR `rtr-version` config field now correctly wired
+  through to the client (was previously ignored)
+- TCP socket buffer tuning skipped for TLS connections
+  (prevented TLS sessions from establishing on some
+  platforms)
+
 ## [0.1.0] - 2026-04-15
 
 Initial public release — Phase 1 (Foundation) and Phase 2 (ASPA Intelligence) complete.

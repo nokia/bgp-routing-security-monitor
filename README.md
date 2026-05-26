@@ -42,6 +42,8 @@ raven routes --posture origin-invalid
 | **Prometheus** | `/metrics` endpoint for Grafana dashboards |
 | **OpenTelemetry** | OTLP metrics export alongside Prometheus |
 | **Single Binary** | Zero dependencies — download and run |
+| **RTR TLS** | Encrypt RTR sessions to your RPKI validator (`transport: tls`) |
+| **BMP TLS** | Optional TLS termination on the BMP listener |
 
 ## Documentation
 

@@ -3,15 +3,19 @@ package rtr
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/nokia/bgp-routing-security-monitor/internal/config"
 	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
@@ -37,6 +41,8 @@ const rtrHeaderLen = 8
 // Client maintains an RTR session with a single RPKI validator cache.
 type Client struct {
 	address         string
+	transport       string // "tcp" (default) or "tls"
+	tlsCfg          *tls.Config
 	vrpStore        *store.VRPStore
 	aspaStore       *store.ASPAStore
 	log             *slog.Logger
@@ -44,6 +50,7 @@ type Client struct {
 	retryMax        time.Duration
 	hasReset        bool
 	fullSyncPending bool  // true between Reset Query send and EndOfData receive
+	configVersion   uint8 // configured starting version; reset to this on each session
 	protoVersion    uint8 // RTR protocol version (0, 1, or 2)
 	onUpdate        func()
 	readyOnce       sync.Once
@@ -51,17 +58,67 @@ type Client struct {
 }
 
 // NewClient creates an RTR client that syncs VRPs into the given store.
-func NewClient(address string, vrpStore *store.VRPStore, aspaStore *store.ASPAStore, log *slog.Logger) *Client {
-	return &Client{
-		address:      address,
-		vrpStore:     vrpStore,
-		aspaStore:    aspaStore,
-		log:          log.With("subsystem", "rtr", "cache", address),
-		retryMin:     5 * time.Second,
-		retryMax:     60 * time.Second,
-		protoVersion: 2,
-		ready:        make(chan struct{}),
+// transport selects the wire encoding: "tcp" (default, plaintext) or "tls".
+// tlsCfg is consulted only when transport == "tls"; it may be nil, in which
+// case the system root CA pool is used and no client certificate is presented.
+func NewClient(address string, transport string, tlsCfg *config.TLSConfig, vrpStore *store.VRPStore, aspaStore *store.ASPAStore, configVersion uint8, log *slog.Logger) (*Client, error) {
+	if transport == "" {
+		transport = "tcp"
 	}
+	logger := log.With("subsystem", "rtr", "cache", address)
+
+	c := &Client{
+		address:       address,
+		transport:     transport,
+		vrpStore:      vrpStore,
+		aspaStore:     aspaStore,
+		log:           logger,
+		retryMin:      5 * time.Second,
+		retryMax:      60 * time.Second,
+		configVersion: configVersion,
+		protoVersion:  configVersion,
+		ready:         make(chan struct{}),
+	}
+
+	if transport == "tls" {
+		built, err := buildTLSConfig(tlsCfg, logger)
+		if err != nil {
+			return nil, err
+		}
+		c.tlsCfg = built
+	}
+
+	return c, nil
+}
+
+// buildTLSConfig assembles a *tls.Config from the user-supplied paths.
+// A nil cfg or empty CA falls back to the system root pool.
+func buildTLSConfig(cfg *config.TLSConfig, log *slog.Logger) (*tls.Config, error) {
+	out := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	if cfg == nil || cfg.CA == "" {
+		log.Warn("RTR TLS configured without a custom CA; using system root pool")
+	} else {
+		pem, err := os.ReadFile(cfg.CA)
+		if err != nil {
+			return nil, fmt.Errorf("read RTR TLS CA %q: %w", cfg.CA, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("parse RTR TLS CA %q: no PEM certificates found", cfg.CA)
+		}
+		out.RootCAs = pool
+	}
+
+	if cfg != nil && cfg.Cert != "" && cfg.Key != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.Cert, cfg.Key)
+		if err != nil {
+			return nil, fmt.Errorf("load RTR TLS client cert: %w", err)
+		}
+		out.Certificates = []tls.Certificate{cert}
+	}
+
+	return out, nil
 }
 
 // Ready returns a channel that is closed after the first successful RTR sync.
@@ -105,28 +162,54 @@ func (c *Client) Start(ctx context.Context) {
 
 // runSession handles a single RTR connection lifecycle.
 func (c *Client) runSession(ctx context.Context) error {
-	// Reset to the highest supported version on each new session attempt.
+	// Reset to the configured starting version on each new session attempt.
 	// Transient errors (e.g. "Running initial validation" during cache startup)
 	// must not permanently downgrade the version across reconnects.
 	// Version negotiation will still fall back within this session if the cache
-	// genuinely rejects v2 with an error report.
-	c.protoVersion = 2
+	// genuinely rejects the starting version with an error report.
+	c.protoVersion = c.configVersion
 
-	dialer := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", c.address)
-	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+	var (
+		conn   net.Conn
+		tcpRaw *net.TCPConn
+	)
+
+	switch c.transport {
+	case "tls":
+		// tls.DialWithDialer ignores DialContext's deadline, so we bound the
+		// handshake via the dialer's own Timeout.
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		tconn, err := tls.DialWithDialer(dialer, "tcp", c.address, c.tlsCfg)
+		if err != nil {
+			return fmt.Errorf("connect (tls): %w", err)
+		}
+		conn = tconn
+		// Reach through tls.Conn to the underlying TCP socket so we can apply
+		// the same buffer tunings used on plaintext sessions.
+		if tc, ok := tconn.NetConn().(*net.TCPConn); ok {
+			tcpRaw = tc
+		}
+	default:
+		dialer := net.Dialer{Timeout: 10 * time.Second}
+		pc, err := dialer.DialContext(ctx, "tcp", c.address)
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		conn = pc
+		if tc, ok := pc.(*net.TCPConn); ok {
+			tcpRaw = tc
+		}
 	}
 	defer conn.Close()
 
 	// Tune TCP buffers to handle large VRP table dumps
-	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)
-		tc.SetReadBuffer(4 * 1024 * 1024)
-		tc.SetWriteBuffer(1 * 1024 * 1024)
+	if tcpRaw != nil && c.transport != "tls" {
+		tcpRaw.SetNoDelay(true)
+		tcpRaw.SetReadBuffer(4 * 1024 * 1024)
+		tcpRaw.SetWriteBuffer(1 * 1024 * 1024)
 	}
 
-	c.log.Info("RTR session established")
+	c.log.Info("RTR session established", "transport", c.transport)
 	metrics.RTRSessionState.WithLabelValues(c.address).Set(1)
 	defer metrics.RTRSessionState.WithLabelValues(c.address).Set(0)
 	metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.Count()))

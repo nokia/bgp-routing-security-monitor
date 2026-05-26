@@ -2,15 +2,19 @@ package bmp
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/nokia/bgp-routing-security-monitor/internal/config"
 	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
@@ -18,6 +22,7 @@ import (
 // Listener accepts BMP connections from routers and processes messages.
 type Listener struct {
 	addr       string
+	tlsCfg     *tls.Config // nil = plain TCP
 	log        *slog.Logger
 	routeCh    chan<- types.Route
 	withdrawCh chan<- types.Withdrawal
@@ -29,9 +34,11 @@ type Listener struct {
 }
 
 // NewListener creates a BMP listener that sends parsed routes to routeCh.
-func NewListener(addr string, routeCh chan<- types.Route, withdrawCh chan<- types.Withdrawal, log *slog.Logger) *Listener {
+// If tlsCfg is non-nil, the listener accepts TLS connections; otherwise plain TCP.
+func NewListener(addr string, tlsCfg *tls.Config, routeCh chan<- types.Route, withdrawCh chan<- types.Withdrawal, log *slog.Logger) *Listener {
 	return &Listener{
 		addr:       addr,
+		tlsCfg:     tlsCfg,
 		log:        log.With("subsystem", "bmp"),
 		routeCh:    routeCh,
 		withdrawCh: withdrawCh,
@@ -40,14 +47,56 @@ func NewListener(addr string, routeCh chan<- types.Route, withdrawCh chan<- type
 	}
 }
 
+// BuildTLSConfig assembles a server-side *tls.Config from the operator-supplied
+// paths. Cert and Key are required (BMP TLS is server auth). If CA is present,
+// mutual TLS is enabled and client certs are required.
+func BuildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("BMP TLS config is nil")
+	}
+	if cfg.Cert == "" || cfg.Key == "" {
+		return nil, fmt.Errorf("BMP TLS requires both cert and key paths")
+	}
+	cert, err := tls.LoadX509KeyPair(cfg.Cert, cfg.Key)
+	if err != nil {
+		return nil, fmt.Errorf("load BMP TLS keypair: %w", err)
+	}
+
+	out := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	if cfg.CA != "" {
+		pem, err := os.ReadFile(cfg.CA)
+		if err != nil {
+			return nil, fmt.Errorf("read BMP TLS CA %q: %w", cfg.CA, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("parse BMP TLS CA %q: no PEM certificates found", cfg.CA)
+		}
+		out.ClientCAs = pool
+		out.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return out, nil
+}
+
 // Start begins listening for BMP connections. Blocks until ctx is cancelled.
 func (l *Listener) Start(ctx context.Context) error {
 	var err error
-	l.listener, err = net.Listen("tcp", l.addr)
+	transport := "tcp"
+	if l.tlsCfg != nil {
+		l.listener, err = tls.Listen("tcp", l.addr, l.tlsCfg)
+		transport = "tls"
+	} else {
+		l.listener, err = net.Listen("tcp", l.addr)
+	}
 	if err != nil {
 		return fmt.Errorf("BMP listen on %s: %w", l.addr, err)
 	}
-	l.log.Info("BMP listener started", "addr", l.addr)
+	l.log.Info("BMP listener started", "addr", l.addr, "transport", transport)
 
 	go func() {
 		<-ctx.Done()

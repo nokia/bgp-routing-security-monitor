@@ -114,6 +114,9 @@ func (s *VRPStore) RemoveVRP(vrp types.VRP) {
 // FindCovering returns all VRPs that cover the given prefix.
 // A VRP covers a route prefix if the VRP prefix is equal to or
 // less specific than the route prefix (RFC 6811 §2).
+//
+// Address-family agnostic: netip.Prefix.Bits() is 32 for IPv4 and 128 for IPv6,
+// so the /0..Bits() walk covers both families with no special-casing.
 func (s *VRPStore) FindCovering(prefix netip.Prefix) []types.VRP {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

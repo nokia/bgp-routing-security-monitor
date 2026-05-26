@@ -112,6 +112,91 @@ func TestROVNoOriginASN(t *testing.T) {
 	}
 }
 
+func TestROVValidIPv6(t *testing.T) {
+	s := store.NewVRPStore()
+	s.ReplaceAll([]types.VRP{
+		{Prefix: netip.MustParsePrefix("2001:db8:2121::/48"), ASN: 2121, MaxLength: 48},
+	}, 1, 1)
+
+	a := NewAnnotator(s)
+	route := &types.Route{
+		Prefix: netip.MustParsePrefix("2001:db8:2121::/48"),
+		ASPath: []uint32{65000, 2121},
+	}
+
+	result := a.Validate(route)
+	if result.State != types.ROVValid {
+		t.Errorf("expected Valid for IPv6 match, got %s: %s", result.State, result.Reason)
+	}
+}
+
+func TestROVInvalidIPv6OriginMismatch(t *testing.T) {
+	s := store.NewVRPStore()
+	s.ReplaceAll([]types.VRP{
+		{Prefix: netip.MustParsePrefix("2001:db8:2121::/48"), ASN: 2121, MaxLength: 48},
+	}, 1, 1)
+
+	a := NewAnnotator(s)
+	// Wrong origin ASN — IPv6 hijack scenario
+	route := &types.Route{
+		Prefix: netip.MustParsePrefix("2001:db8:2121::/48"),
+		ASPath: []uint32{65000, 65001},
+	}
+
+	result := a.Validate(route)
+	if result.State != types.ROVInvalid {
+		t.Errorf("expected Invalid for IPv6 origin mismatch, got %s: %s", result.State, result.Reason)
+	}
+}
+
+func TestROVNotFoundIPv6(t *testing.T) {
+	s := store.NewVRPStore()
+	// VRPs for a different IPv6 prefix — should not cover this route
+	s.ReplaceAll([]types.VRP{
+		{Prefix: netip.MustParsePrefix("2001:db8:2121::/48"), ASN: 2121, MaxLength: 48},
+	}, 1, 1)
+
+	a := NewAnnotator(s)
+	route := &types.Route{
+		Prefix: netip.MustParsePrefix("2001:db8:dead::/48"),
+		ASPath: []uint32{65000, 65001},
+	}
+
+	result := a.Validate(route)
+	if result.State != types.ROVNotFound {
+		t.Errorf("expected NotFound for uncovered IPv6, got %s: %s", result.State, result.Reason)
+	}
+}
+
+// TestROVMixedFamilies confirms IPv4 validation still works when the store
+// contains both IPv4 and IPv6 VRPs. Regression check for the IPv6 rollout.
+func TestROVMixedFamilies(t *testing.T) {
+	s := store.NewVRPStore()
+	s.ReplaceAll([]types.VRP{
+		{Prefix: netip.MustParsePrefix("2001:db8:2121::/48"), ASN: 2121, MaxLength: 48},
+		{Prefix: netip.MustParsePrefix("198.51.100.0/24"), ASN: 13335, MaxLength: 24},
+		{Prefix: netip.MustParsePrefix("2001:db8:6501::/48"), ASN: 65001, MaxLength: 48},
+	}, 1, 1)
+
+	a := NewAnnotator(s)
+
+	v4 := &types.Route{
+		Prefix: netip.MustParsePrefix("198.51.100.0/24"),
+		ASPath: []uint32{64501, 13335},
+	}
+	if got := a.Validate(v4); got.State != types.ROVValid {
+		t.Errorf("IPv4 with IPv6 VRPs in store: expected Valid, got %s: %s", got.State, got.Reason)
+	}
+
+	v6 := &types.Route{
+		Prefix: netip.MustParsePrefix("2001:db8:6501::/48"),
+		ASPath: []uint32{65000, 65001},
+	}
+	if got := a.Validate(v6); got.State != types.ROVValid {
+		t.Errorf("IPv6 with IPv4 VRPs in store: expected Valid, got %s: %s", got.State, got.Reason)
+	}
+}
+
 func TestROVMultipleVRPs(t *testing.T) {
 	s := store.NewVRPStore()
 	s.ReplaceAll([]types.VRP{

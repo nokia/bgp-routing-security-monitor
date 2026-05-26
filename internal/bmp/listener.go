@@ -412,7 +412,9 @@ func (l *Listener) parseRoutes(rm BMPRouteMonitoring, routerAddr netip.Addr) ([]
 }
 
 // parseBGPUpdate extracts routes from a BGP UPDATE message body.
-// This uses GoBGP's packet parser for the heavy lifting.
+//
+// Handles both IPv4 NLRI (carried directly in the UPDATE body) and IPv6 NLRI
+// (carried inside MP_REACH_NLRI / MP_UNREACH_NLRI path attributes per RFC 4760).
 func parseBGPUpdate(data []byte, pph BMPPerPeerHeader, routerAddr netip.Addr) ([]types.Route, []types.Withdrawal, error) {
 	if len(data) < 4 {
 		return nil, nil, nil
@@ -422,29 +424,15 @@ func parseBGPUpdate(data []byte, pph BMPPerPeerHeader, routerAddr netip.Addr) ([
 		ribType = types.AdjRIBInPost
 	}
 
-	// Parse withdrawn prefixes
+	// Parse IPv4 withdrawn prefixes (top of UPDATE body)
 	withdrawnLen := binary.BigEndian.Uint16(data[0:2])
 	var withdrawals []types.Withdrawal
 	if withdrawnLen > 0 {
-		wOff := 2
-		wEnd := 2 + int(withdrawnLen)
-		for wOff < wEnd {
-			pLen := int(data[wOff])
-			wOff++
-			pBytes := (pLen + 7) / 8
-			if wOff+pBytes > wEnd {
-				break
-			}
-			buf := make([]byte, 4)
-			copy(buf, data[wOff:wOff+pBytes])
-			wOff += pBytes
-			addr, ok := netip.AddrFromSlice(buf)
-			if !ok {
-				continue
-			}
+		v4Withdrawals := parseNLRI(data[2:2+int(withdrawnLen)], 4)
+		for _, p := range v4Withdrawals {
 			withdrawals = append(withdrawals, types.Withdrawal{
 				PeerAddr: pph.PeerAddr,
-				Prefix:   netip.PrefixFrom(addr.Unmap(), pLen),
+				Prefix:   p,
 				RIBType:  ribType,
 			})
 		}
@@ -464,62 +452,158 @@ func parseBGPUpdate(data []byte, pph BMPPerPeerHeader, routerAddr netip.Addr) ([
 		return nil, nil, fmt.Errorf("path attributes overflow: %d > %d", pathAttrEnd, len(data))
 	}
 
-	// Parse path attributes
-	asPath, asPathRaw, origin, nextHop, communities, largeCommunities := parsePathAttributes(data[offset:pathAttrEnd])
+	// Parse path attributes (extracts AS_PATH etc and the raw MP_REACH/MP_UNREACH bytes)
+	attrs := parsePathAttributes(data[offset:pathAttrEnd])
 	offset = pathAttrEnd
 
-	// Parse NLRI (remaining bytes after path attributes)
+	// Parse IPv4 NLRI (remaining bytes after path attributes)
 	var routes []types.Route
-	for offset < len(data) {
-		prefixLen := int(data[offset])
-		offset++
-		prefixBytes := (prefixLen + 7) / 8
+	v4Prefixes := parseNLRI(data[offset:], 4)
+	for _, prefix := range v4Prefixes {
+		routes = append(routes, makeRoute(prefix, attrs.nextHop, pph, attrs, ribType))
+	}
 
-		if offset+prefixBytes > len(data) {
-			break
+	// Parse IPv6 NLRI carried inside MP_REACH_NLRI (AFI=2, SAFI=1)
+	if len(attrs.mpReach) > 0 {
+		nh, prefixes := parseMPReachNLRI(attrs.mpReach)
+		for _, p := range prefixes {
+			routes = append(routes, makeRoute(p, nh, pph, attrs, ribType))
 		}
+	}
 
-		prefixBuf := make([]byte, 4)
-		copy(prefixBuf, data[offset:offset+prefixBytes])
-		offset += prefixBytes
-
-		addr, ok := netip.AddrFromSlice(prefixBuf)
-		if !ok {
-			continue
+	// Parse IPv6 withdrawals carried inside MP_UNREACH_NLRI (AFI=2, SAFI=1)
+	if len(attrs.mpUnreach) > 0 {
+		prefixes := parseMPUnreachNLRI(attrs.mpUnreach)
+		for _, p := range prefixes {
+			withdrawals = append(withdrawals, types.Withdrawal{
+				PeerAddr: pph.PeerAddr,
+				Prefix:   p,
+				RIBType:  ribType,
+			})
 		}
-		prefix := netip.PrefixFrom(addr, prefixLen)
-
-		route := types.Route{
-			Timestamp:        pph.Timestamp,
-			PeerAddr:         pph.PeerAddr,
-			PeerASN:          pph.PeerASN,
-			RouterID:         pph.PeerBGPID,
-			Prefix:           prefix,
-			ASPath:           asPath,
-			ASPathRaw:        asPathRaw,
-			Origin:           types.OriginType(origin),
-			NextHop:          nextHop,
-			Communities:      communities,
-			LargeCommunities: largeCommunities,
-			RIBType:          ribType,
-		}
-
-		routes = append(routes, route)
 	}
 
 	return routes, withdrawals, nil
 }
 
+// makeRoute constructs a types.Route from a prefix, next hop, and extracted path attributes.
+func makeRoute(prefix netip.Prefix, nextHop netip.Addr, pph BMPPerPeerHeader, attrs pathAttrs, ribType types.RIBType) types.Route {
+	return types.Route{
+		Timestamp:        pph.Timestamp,
+		PeerAddr:         pph.PeerAddr,
+		PeerASN:          pph.PeerASN,
+		RouterID:         pph.PeerBGPID,
+		Prefix:           prefix,
+		ASPath:           attrs.asPath,
+		ASPathRaw:        attrs.asPathRaw,
+		Origin:           types.OriginType(attrs.origin),
+		NextHop:          nextHop,
+		Communities:      attrs.communities,
+		LargeCommunities: attrs.largeCommunities,
+		RIBType:          ribType,
+	}
+}
+
+// parseNLRI iterates length-prefixed NLRI entries. addrLen is 4 for IPv4 NLRI
+// or 16 for IPv6 NLRI; it bounds how many bytes are read into the address slot.
+func parseNLRI(data []byte, addrLen int) []netip.Prefix {
+	var out []netip.Prefix
+	off := 0
+	maxBits := addrLen * 8
+	for off < len(data) {
+		pLen := int(data[off])
+		off++
+		if pLen > maxBits {
+			break
+		}
+		pBytes := (pLen + 7) / 8
+		if off+pBytes > len(data) {
+			break
+		}
+		buf := make([]byte, addrLen)
+		copy(buf, data[off:off+pBytes])
+		off += pBytes
+		addr, ok := netip.AddrFromSlice(buf)
+		if !ok {
+			continue
+		}
+		out = append(out, netip.PrefixFrom(addr.Unmap(), pLen))
+	}
+	return out
+}
+
+// parseMPReachNLRI parses an MP_REACH_NLRI attribute payload (RFC 4760 §3).
+// Layout:
+//
+//	AFI(2) | SAFI(1) | NH Len(1) | NH(variable) | Reserved(1) | NLRI(variable)
+//
+// Only AFI=2 (IPv6) SAFI=1 (unicast) is handled; other combinations are ignored.
+// For IPv6 the next hop is 16 bytes (global) or 32 bytes (global + link-local);
+// the link-local is dropped — RAVEN only records the global address.
+func parseMPReachNLRI(data []byte) (netip.Addr, []netip.Prefix) {
+	if len(data) < 5 {
+		return netip.Addr{}, nil
+	}
+	afi := binary.BigEndian.Uint16(data[0:2])
+	safi := data[2]
+	if afi != 2 || safi != 1 {
+		return netip.Addr{}, nil
+	}
+	nhLen := int(data[3])
+	if 4+nhLen+1 > len(data) {
+		return netip.Addr{}, nil
+	}
+	var nextHop netip.Addr
+	if nhLen >= 16 {
+		// Take the first 16 bytes as the global next hop. Per RFC 2545, a
+		// 32-byte field carries the link-local in bytes 16..31; we drop it.
+		if addr, ok := netip.AddrFromSlice(data[4 : 4+16]); ok {
+			nextHop = addr
+		}
+	}
+	nlriStart := 4 + nhLen + 1 // skip reserved byte
+	if nlriStart > len(data) {
+		return nextHop, nil
+	}
+	return nextHop, parseNLRI(data[nlriStart:], 16)
+}
+
+// parseMPUnreachNLRI parses an MP_UNREACH_NLRI attribute payload (RFC 4760 §4).
+// Layout:
+//
+//	AFI(2) | SAFI(1) | Withdrawn NLRI(variable)
+//
+// Only AFI=2 (IPv6) SAFI=1 (unicast) is handled.
+func parseMPUnreachNLRI(data []byte) []netip.Prefix {
+	if len(data) < 3 {
+		return nil
+	}
+	afi := binary.BigEndian.Uint16(data[0:2])
+	safi := data[2]
+	if afi != 2 || safi != 1 {
+		return nil
+	}
+	return parseNLRI(data[3:], 16)
+}
+
+// pathAttrs collects the path-attribute fields RAVEN cares about, plus the raw
+// MP_REACH/MP_UNREACH bodies for downstream multiprotocol NLRI parsing.
+type pathAttrs struct {
+	asPath           []uint32
+	asPathRaw        []types.ASSegment
+	origin           uint8
+	nextHop          netip.Addr // IPv4 NEXT_HOP only; IPv6 next hop lives in MP_REACH
+	communities      []types.Community
+	largeCommunities []types.LargeCommunity
+	mpReach          []byte // MP_REACH_NLRI body (attr type 14)
+	mpUnreach        []byte // MP_UNREACH_NLRI body (attr type 15)
+}
+
 // parsePathAttributes walks the path attributes and extracts the fields
-// RAVEN cares about: AS_PATH, ORIGIN, NEXT_HOP, COMMUNITIES.
-func parsePathAttributes(data []byte) (
-	asPath []uint32,
-	asPathRaw []types.ASSegment,
-	origin uint8,
-	nextHop netip.Addr,
-	communities []types.Community,
-	largeCommunities []types.LargeCommunity,
-) {
+// RAVEN cares about: AS_PATH, ORIGIN, NEXT_HOP, COMMUNITIES, MP_REACH_NLRI,
+// MP_UNREACH_NLRI.
+func parsePathAttributes(data []byte) pathAttrs {
+	var out pathAttrs
 	offset := 0
 	for offset < len(data) {
 		if offset+2 > len(data) {
@@ -556,31 +640,36 @@ func parsePathAttributes(data []byte) (
 		switch attrType {
 		case 1: // ORIGIN
 			if len(attrData) >= 1 {
-				origin = attrData[0]
+				out.origin = attrData[0]
 			}
 
 		case 2: // AS_PATH
-			asPath, asPathRaw = parseASPath(attrData)
+			out.asPath, out.asPathRaw = parseASPath(attrData)
 
 		case 3: // NEXT_HOP (IPv4)
 			if len(attrData) == 4 {
-				addr, ok := netip.AddrFromSlice(attrData)
-				if ok {
-					nextHop = addr
+				if addr, ok := netip.AddrFromSlice(attrData); ok {
+					out.nextHop = addr
 				}
 			}
 
 		case 8: // COMMUNITIES
 			for i := 0; i+4 <= len(attrData); i += 4 {
-				communities = append(communities, types.Community{
+				out.communities = append(out.communities, types.Community{
 					High: binary.BigEndian.Uint16(attrData[i : i+2]),
 					Low:  binary.BigEndian.Uint16(attrData[i+2 : i+4]),
 				})
 			}
 
+		case 14: // MP_REACH_NLRI (RFC 4760)
+			out.mpReach = attrData
+
+		case 15: // MP_UNREACH_NLRI (RFC 4760)
+			out.mpUnreach = attrData
+
 		case 32: // LARGE_COMMUNITIES
 			for i := 0; i+12 <= len(attrData); i += 12 {
-				largeCommunities = append(largeCommunities, types.LargeCommunity{
+				out.largeCommunities = append(out.largeCommunities, types.LargeCommunity{
 					GlobalAdmin: binary.BigEndian.Uint32(attrData[i : i+4]),
 					LocalData1:  binary.BigEndian.Uint32(attrData[i+4 : i+8]),
 					LocalData2:  binary.BigEndian.Uint32(attrData[i+8 : i+12]),
@@ -589,7 +678,7 @@ func parsePathAttributes(data []byte) (
 		}
 	}
 
-	return
+	return out
 }
 
 // parseASPath parses the AS_PATH attribute data into flat and raw forms.

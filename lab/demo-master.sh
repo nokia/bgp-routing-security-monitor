@@ -544,6 +544,34 @@ hijack-clean)
   ok "Route table clean."
   ;;
 
+# ── HIJACK6 — IPv6 origin hijack ─────────────────────────────────────────────
+hijack6)
+  header "Attack Scenario — IPv6 Origin Hijack"
+  echo "=== IPv6 Origin Hijack: AS65001 announcing AS2121's prefix ==="
+  sudo docker exec clab-raven-demo-edge vtysh \
+    -c "configure terminal" \
+    -c "router bgp 65001" \
+    -c " address-family ipv6 unicast" \
+    -c "  network 2001:db8:2121::/48" \
+    -c " exit-address-family" \
+    -c "end"
+  echo "Injected. Run: raven routes --prefix 2001:db8:2121::/48"
+  ;;
+
+# ── UNHIJACK6 — withdraw IPv6 hijack ─────────────────────────────────────────
+unhijack6)
+  header "Withdrawing IPv6 Hijack"
+  echo "=== Withdrawing IPv6 hijack ==="
+  sudo docker exec clab-raven-demo-edge vtysh \
+    -c "configure terminal" \
+    -c "router bgp 65001" \
+    -c " address-family ipv6 unicast" \
+    -c "  no network 2001:db8:2121::/48" \
+    -c " exit-address-family" \
+    -c "end"
+  echo "Withdrawn."
+  ;;
+
 # ── ROUTE LEAK ───────────────────────────────────────────────────────────────
 leak)
   header "Attack Scenario 2 — Route Leak (ASPA)"
@@ -791,6 +819,19 @@ phase3)
   echo ""
   step "--- Cleaning hijack ---"
   bash "$0" hijack-clean
+  sleep 3
+
+  echo ""
+  step "--- Injecting IPv6 origin hijack ---"
+  bash "$0" hijack6
+  sleep 5
+  step "RAVEN detection — IPv6 origin-invalid:"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 2001:db8:2121::/48 || true
+  sleep 2
+
+  echo ""
+  step "--- Withdrawing IPv6 hijack ---"
+  bash "$0" unhijack6
   sleep 3
 
   echo ""
@@ -1162,6 +1203,8 @@ lacnic)
   echo "  baseline       Show clean route table"
   echo "  hijack         Inject origin hijack scenario"
   echo "  hijack-clean   Withdraw the hijack"
+  echo "  hijack6        Inject IPv6 origin hijack scenario"
+  echo "  unhijack6      Withdraw the IPv6 hijack"
   echo "  leak           Show route leak (ASPA) detection"
   echo "  leak-clean     Withdraw the route leak"
   echo "  whatif         Run what-if simulator"

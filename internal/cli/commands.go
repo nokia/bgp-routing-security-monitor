@@ -230,20 +230,38 @@ var routesCmd = &cobra.Command{
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(tw, "PREFIX\tPEER\tORIGIN\tROV\tASPA\tPOSTURE\n")
+		prefixes := make([]string, len(routes))
+		for i, r := range routes {
+			prefixes[i] = r.Prefix
+		}
+		pw := prefixColWidth(prefixes)
+		fmt.Fprintf(tw, "%-*s\tPEER\tORIGIN\tROV\tASPA\tPOSTURE\n", pw, "PREFIX")
 		for _, r := range routes {
 			asPathStr := formatASPath(r.ASPath)
 			origin := fmt.Sprintf("AS%d", r.OriginASN)
 			if r.OriginASN == 0 {
 				origin = "-"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.Prefix, r.PeerAddr, origin, r.ROV, r.ASPA, r.Posture)
+			fmt.Fprintf(tw, "%-*s\t%s\t%s\t%s\t%s\t%s\n",
+				pw, r.Prefix, r.PeerAddr, origin, r.ROV, r.ASPA, r.Posture)
 			_ = asPathStr
 		}
 		tw.Flush()
 		return nil
 	},
+}
+
+// prefixColWidth returns the column width to use for a PREFIX column: the
+// longest prefix string in the result set, but never less than 24 characters
+// so the column reads cleanly with IPv6 entries like 2001:db8:2121::/48.
+func prefixColWidth(prefixes []string) int {
+	w := 24
+	for _, p := range prefixes {
+		if l := len(p); l > w {
+			w = l
+		}
+	}
+	return w
 }
 
 // ─── validate ───
@@ -284,14 +302,19 @@ var validateCmd = &cobra.Command{
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(tw, "PREFIX\tPEER\tORIGIN\tROV\tPOSTURE\tREASON\n")
+		prefixes := make([]string, len(routes))
+		for i, r := range routes {
+			prefixes[i] = r.Prefix
+		}
+		pw := prefixColWidth(prefixes)
+		fmt.Fprintf(tw, "%-*s\tPEER\tORIGIN\tROV\tPOSTURE\tREASON\n", pw, "PREFIX")
 		for _, r := range routes {
 			origin := fmt.Sprintf("AS%d", r.OriginASN)
 			if r.OriginASN == 0 {
 				origin = "-"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.Prefix, r.PeerAddr, origin, r.ROV, r.Posture, r.ROVReason)
+			fmt.Fprintf(tw, "%-*s\t%s\t%s\t%s\t%s\t%s\n",
+				pw, r.Prefix, r.PeerAddr, origin, r.ROV, r.Posture, r.ROVReason)
 		}
 		tw.Flush()
 		return nil

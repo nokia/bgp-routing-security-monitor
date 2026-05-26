@@ -48,11 +48,15 @@ type RuleConfig struct {
 
 // TriggerConfig is the YAML representation of a trigger.
 // The Type field selects the trigger kind: posture, posture_change, prefix,
-// cache_unhealthy, or compound.
+// asn, protected_asn, cache_unhealthy, or compound.
 type TriggerConfig struct {
 	Type     string   `mapstructure:"type"`
 	Postures []string `mapstructure:"postures"`
 	Prefix   string   `mapstructure:"prefix"`
+	ASNs []uint32 `mapstructure:"asns"`
+	// ASNMatch controls how the asn trigger matches: "origin" (default) checks
+	// only the last ASN in the AS path; "path" matches any ASN in the full path.
+	ASNMatch string `mapstructure:"asn_match"`
 	// Operator is used by compound triggers: "and" or "or".
 	Operator string `mapstructure:"operator"`
 	// Triggers holds sub-triggers for compound triggers.

@@ -64,18 +64,21 @@ func (a *LogAction) Execute(ctx context.Context, event Event) error {
 
 // webhookPayload is the JSON body posted to the configured endpoint.
 type webhookPayload struct {
-	ID         string `json:"id"`
-	Timestamp  string `json:"timestamp"`
-	Type       string `json:"type"`
-	RouterID   string `json:"router_id"`
-	Prefix     string `json:"prefix"`
-	PeerAddr   string `json:"peer_addr"`
-	PeerASN    uint32 `json:"peer_asn"`
-	OldPosture string `json:"old_posture"`
-	NewPosture string `json:"new_posture"`
-	ROVState   string `json:"rov_state"`
-	ASPAState  string `json:"aspa_state"`
-	CacheName  string `json:"cache_name"`
+	ID            string   `json:"id"`
+	Timestamp     string   `json:"timestamp"`
+	Type          string   `json:"type"`
+	RuleName      string   `json:"rule_name"`
+	RouterID      string   `json:"router_id"`
+	Prefix        string   `json:"prefix"`
+	PeerAddr      string   `json:"peer_addr"`
+	PeerASN       uint32   `json:"peer_asn"`
+	OriginASN     uint32   `json:"origin_asn"`
+	ProtectedASNs []uint32 `json:"protected_asns,omitempty"`
+	OldPosture    string   `json:"old_posture"`
+	NewPosture    string   `json:"new_posture"`
+	ROVState      string   `json:"rov_state"`
+	ASPAState     string   `json:"aspa_state"`
+	CacheName     string   `json:"cache_name"`
 }
 
 // WebhookAction delivers the event payload to an HTTP endpoint.
@@ -85,6 +88,7 @@ type webhookPayload struct {
 type WebhookAction struct {
 	url            string
 	secret         string
+	ruleName       string
 	maxAttempts    int
 	client         *http.Client
 	headers        map[string]string
@@ -92,10 +96,11 @@ type WebhookAction struct {
 	initialBackoff time.Duration // default 500ms; overridable in tests
 }
 
-func newWebhookAction(rawURL, secret string, maxAttempts int, timeout time.Duration, headers map[string]string, log *slog.Logger) *WebhookAction {
+func newWebhookAction(rawURL, secret, ruleName string, maxAttempts int, timeout time.Duration, headers map[string]string, log *slog.Logger) *WebhookAction {
 	return &WebhookAction{
 		url:            rawURL,
 		secret:         secret,
+		ruleName:       ruleName,
 		maxAttempts:    maxAttempts,
 		client:         &http.Client{Timeout: timeout},
 		headers:        headers,
@@ -209,6 +214,7 @@ func (a *WebhookAction) buildPayload(event Event) webhookPayload {
 		ID:         event.ID,
 		Timestamp:  event.Timestamp.Format(time.RFC3339Nano),
 		Type:       string(event.Type),
+		RuleName:   a.ruleName,
 		RouterID:   event.RouterID,
 		OldPosture: string(event.OldPosture),
 		NewPosture: string(event.NewPosture),
@@ -218,8 +224,12 @@ func (a *WebhookAction) buildPayload(event Event) webhookPayload {
 		p.Prefix = event.Route.Prefix.String()
 		p.PeerAddr = event.Route.PeerAddr.String()
 		p.PeerASN = event.Route.PeerASN
+		p.OriginASN = event.Route.OriginASN()
 		p.ROVState = event.Route.ROV.State.String()
 		p.ASPAState = event.Route.ASPA.State.String()
+		for _, vrp := range event.Route.ROV.MatchedVRPs {
+			p.ProtectedASNs = append(p.ProtectedASNs, vrp.ASN)
+		}
 	}
 	return p
 }

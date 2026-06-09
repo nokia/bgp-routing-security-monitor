@@ -1,7 +1,33 @@
 # Changelog
 
-All notable changes to RAVEN will be documented in this file.
+All notable changes to RAVEN are recorded here.
 
+## v0.3.1 (2026-06-09)
+
+### Added
+- IPv6 route monitoring via BMP (`MP_REACH_NLRI` / `MP_UNREACH_NLRI` parsing)
+- IPv6 ROV validation
+- IPv6 origin hijack scenario in demo lab (`./demo-master.sh hijack6`)
+- TLS support for BMP listener and RTR client; skip TCP buffer tuning
+  (`SetReadBuffer`/`SetWriteBuffer`) for TLS connections (WSL2 compatibility)
+
+### Fixed
+- Demo lab: `lacnic` scenario 4 route leak used inline `LEAK-INJECT` route-map
+  with wrong prepend ASN (AS64496 → ROV:Invalid); replaced with permanent
+  `ROUTE-LEAK` route-map (prepend AS1199 → ROV:Valid, ASPA:Invalid,
+  posture:path-suspect as intended)
+- Demo lab: `leak` and `hijack6` vtysh commands converted to heredoc syntax
+  (`docker exec ... bash -c "vtysh << 'VTYSH' ... VTYSH"`) to fix silent
+  failures caused by leading spaces in `-c` arguments
+- Demo lab: leak scenario prefix corrected to `193.0.0.0/21` (AS3333 /
+  RIPE NCC); SLURM ASPA assertion added for AS3333 with provider AS1103
+  (excluding AS65000 to trigger path-suspect)
+
+### Changed
+- Demo lab internet router ASN changed from AS2121 to AS64496 to avoid
+  spurious `path-suspect` at baseline caused by real-world RPKI/ASPA
+  records for AS2121
+  
 ## [0.2.0] - 2026-05-26
 
 ### Active Response (Phase 3)

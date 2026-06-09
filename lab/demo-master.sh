@@ -1094,57 +1094,44 @@ lacnic)
   echo ""
 
   step "Scenario 4 — Route Leak (ASPA)"
-  echo "  Prefix: 145.102.136.0/22 (origin AS64496 / RIPE NCC)"
-  echo "  AS65000 not in AS64496 ASPA provider set → ASPA:Invalid → path-suspect"
+  echo "  Prefix: 145.102.136.0/22 (origin AS1199 / SURFnet — valid ROA)"
+  echo "  ASPA: AS1199 declares provider AS1103 only; AS65000 is NOT authorised"
+  echo "  Mechanism: upstream originates prefix; permanent ROUTE-LEAK route-map"
+  echo "             prepends AS1199 → edge sees AS_PATH [65000 1199]"
+  echo "  Result: ROV:Valid (AS1199 has ROA) + ASPA:Invalid → path-suspect"
   echo ""
+  docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+configure terminal
+ip route 145.102.136.0/22 blackhole
+router bgp 65000
+address-family ipv4 unicast
+network 145.102.136.0/22
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1
+  echo "  Triggering soft outbound reset to push route to edge immediately..."
   docker exec clab-raven-demo-upstream vtysh \
-    -c "configure terminal" \
-    -c "no route-map LEAK-INJECT" \
-    -c "no ip prefix-list LEAK-PREFIX" \
-    -c "end" > /dev/null 2>&1 || true
-  docker exec clab-raven-demo-upstream vtysh \
-    -c "configure terminal" \
-    -c "ip route 145.102.136.0/22 blackhole" \
-    -c "router bgp 65000" \
-    -c "address-family ipv4 unicast" \
-    -c "network 145.102.136.0/22" \
-    -c "neighbor 10.0.0.2 route-map LEAK-INJECT out" \
-    -c "exit-address-family" \
-    -c "end"
-  docker exec clab-raven-demo-upstream vtysh \
-    -c "configure terminal" \
-    -c "route-map LEAK-INJECT permit 10" \
-    -c "match ip address prefix-list LEAK-PREFIX" \
-    -c "set as-path prepend 64496" \
-    -c "exit" \
-    -c "route-map LEAK-INJECT permit 20" \
-    -c "exit" \
-    -c "ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
-    -c "end"
-  docker exec clab-raven-demo-upstream vtysh \
-    -c "clear ip bgp 10.0.0.2 soft out"
+    -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
   echo "  Waiting 5s for BMP propagation..."
   sleep 5
-  step "RAVEN detection — 145.102.136.0/22:"
+  step "RAVEN detection — 145.102.136.0/22 (expect ROV:Valid, ASPA:Invalid, posture:path-suspect):"
   $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 145.102.136.0/22
   echo ""
   alert "ROUTE LEAK DETECTED — ASPA caught what ROV missed."
   echo ""
   read -p "  [ENTER to clean up and continue]" _
   step "Withdrawing route leak..."
+  docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+configure terminal
+no ip route 145.102.136.0/22 blackhole
+router bgp 65000
+address-family ipv4 unicast
+no network 145.102.136.0/22
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1 || true
   docker exec clab-raven-demo-upstream vtysh \
-    -c "configure terminal" \
-    -c "no ip route 145.102.136.0/22 blackhole" \
-    -c "router bgp 65000" \
-    -c "address-family ipv4 unicast" \
-    -c "no network 145.102.136.0/22" \
-    -c "no neighbor 10.0.0.2 route-map LEAK-INJECT out" \
-    -c "exit-address-family" \
-    -c "no route-map LEAK-INJECT" \
-    -c "no ip prefix-list LEAK-PREFIX" \
-    -c "end"
-  docker exec clab-raven-demo-upstream vtysh \
-    -c "clear ip bgp 10.0.0.2 soft out"
+    -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
   sleep 4
   ok "Route leak withdrawn."
   echo ""

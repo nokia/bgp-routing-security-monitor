@@ -9,7 +9,7 @@ LDFLAGS := -s -w \
   -X $(MODULE)/internal/cli.commit=$(COMMIT) \
   -X $(MODULE)/internal/cli.date=$(DATE)
 
-.PHONY: build run test lint proto clean
+.PHONY: build run test lint check proto clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/raven
@@ -22,6 +22,9 @@ test:
 
 lint:
 	golangci-lint run ./...
+
+check: lint
+	go test ./...
 
 proto:
 	buf generate

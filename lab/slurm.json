@@ -12,14 +12,13 @@
       {"asn": 65000, "prefix": "100.64.0.0/24", "maxPrefixLength": 24, "comment": "RAVEN demo ROA"},
       {"asn": 65000, "prefix": "10.10.0.0/24", "maxPrefixLength": 24, "comment": "RAVEN demo ROA"},
       {"asn": 65000, "prefix": "192.0.2.0/24", "maxPrefixLength": 24, "comment": "RAVEN demo ROA — hijack target"},
-      {"asn": 2121, "prefix": "193.0.0.0/21", "maxPrefixLength": 21, "comment": "RAVEN demo ROA — route leak target"},
-      {"asn": 2121, "prefix": "2001:db8:2121::/48", "maxPrefixLength": 48, "comment": "RAVEN demo ROA — IPv6 internet prefix"},
+      {"asn": 64496, "prefix": "2001:db8:2121::/48", "maxPrefixLength": 48, "comment": "RAVEN demo ROA — IPv6 internet prefix"},
       {"asn": 65001, "prefix": "2001:db8:6501::/48", "maxPrefixLength": 48, "comment": "RAVEN demo ROA — IPv6 edge prefix"}
     ],
     "bgpsecAssertions": [],
     "aspaAssertions": [
       {"customerAsn": 65001, "providerAsns": [65000], "comment": "RAVEN demo ASPA — edge AS65001 upstream is AS65000"},
-      {"customerAsn": 65000, "providerAsns": [2121], "comment": "RAVEN demo ASPA — upstream AS65000 provider is AS2121"}
+      {"customerAsn": 65000, "providerAsns": [64496], "comment": "RAVEN demo ASPA — upstream AS65000 provider is AS64496"}
     ]
   }
 }

@@ -141,60 +141,44 @@ setup)
     -c "end" 2>/dev/null || true
 
   # Remove internet router hijack announcement
-  docker exec clab-raven-demo-internet vtysh \
-    -c "configure terminal" \
-    -c "no ip route 192.0.2.0/24 blackhole" \
-    -c "router bgp 2121" \
-    -c " address-family ipv4 unicast" \
-    -c "  no network 192.0.2.0/24" \
-    -c " exit-address-family" \
-    -c "end" 2>/dev/null || true
+  docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
+configure terminal
+no ip route 192.0.2.0/24 blackhole
+router bgp 64496
+address-family ipv4 unicast
+no network 192.0.2.0/24
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1 || true
 
   # ── Routinator ──
   step "Starting Routinator..."
   pkill -x routinator 2>/dev/null || true
   sleep 1
   # --enable-aspa is required for Routinator to fetch and serve ASPA objects
-  # over RTR v2. Without it, AS2121's ASPA record (provider: AS3333) is
+  # over RTR v2. Without it, AS64496's ASPA record (provider: AS3333) is
   # silently dropped and the route-leak scenario shows ASPA:Unknown instead
   # of ASPA:Invalid.
   routinator --enable-aspa server > /tmp/routinator.log 2>&1 &
-  echo "  Waiting for Routinator to sync (up to 60s)..."
-  for i in $(seq 1 12); do
-    if curl -s http://127.0.0.1:8323/api/v1/status 2>/dev/null | grep -q '"vrpsTotal"'; then
-      ok "Routinator ready"; break
-    fi
-    sleep 5; echo -n "."
-  done
-  echo ""
-
-  # Verify AS2121 ASPA is present — without it the route-leak scenario
-  # cannot show path-suspect. If missing, Routinator hasn't synced yet,
-  # was started without --enable-aspa, or the global RPKI fetch is still
-  # in progress.
-  step "Waiting for Routinator ASPA sync (AS2121)..."
-  ASPA_FOUND=0
+  # Routinator's /api/v1/status RTR serial fields stay null until a client
+  # connects, so they aren't a reliable readiness signal. Instead, poll the
+  # validity endpoint — it returns a "state" key once Routinator has finished
+  # the second validation run and is serving data.
+  step "Waiting for Routinator RTR to be ready..."
+  ROUTINATOR_READY=0
   for i in $(seq 1 24); do
-    ASPA_RESULT=$(curl -s http://127.0.0.1:8323/api/v1/aspas \
-      2>/dev/null)
-    if echo "$ASPA_RESULT" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-aspas=d.get('aspas',[])
-match=[a for a in aspas if a.get('customer')==2121]
-sys.exit(0 if match else 1)
-" 2>/dev/null; then
-      ASPA_FOUND=1
-      ok "AS2121 ASPA record loaded."
+    RESULT=$(curl -s "http://localhost:8323/api/v1/validity/65000/100.64.0.0/24" 2>/dev/null)
+    if echo "$RESULT" | grep -q '"state"'; then
+      ok "Routinator RTR ready"
+      ROUTINATOR_READY=1
+      sleep 10
       break
     fi
-    echo -n "  waiting ($i/24)..."
+    printf "  waiting (%d/24)...\n" "$i"
     sleep 5
   done
-  if [ $ASPA_FOUND -eq 0 ]; then
-    alert "AS2121 ASPA not found after 2 minutes."
-    alert "Route leak scenario will show ASPA:Unknown."
-    alert "Check: routinator --enable-aspa server is running"
+  if [ "$ROUTINATOR_READY" -eq 0 ]; then
+    warn "Routinator validity endpoint not ready after 2 minutes — RAVEN may start without RPKI data"
   fi
 
   # ── RAVEN — start AFTER lab is converged for a clean table dump ──
@@ -209,6 +193,8 @@ sys.exit(0 if match else 1)
   fi
   echo "Using config: $RAVEN_CONFIG"
   $RAVEN_BIN serve --config $RAVEN_CONFIG > /tmp/raven.log 2>&1 &
+  RAVEN_PID=$!
+  disown $RAVEN_PID
 
   # Wait for RTR sync (VRPs loaded) before checking routes
   echo "  Waiting for RAVEN to sync with Routinator..."
@@ -233,25 +219,26 @@ sys.exit(0 if match else 1)
   # seq 10: prepend AS1199 onto 145.102.136.0/22 → edge sees [65000,1199], ASPA invalid
   # seq 20: prepend AS65001 onto 10.10.0.0/24 → edge sees [65000,65001], origin-invalid
   # seq 30: catch-all permit — without this FRR denies all other routes to edge
-  if ! docker exec clab-raven-demo-upstream vtysh \
-      -c "configure terminal" \
-      -c "ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
-      -c "ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
-      -c "route-map ROUTE-LEAK permit 10" \
-      -c " match ip address prefix-list LEAK-PREFIX" \
-      -c " set as-path prepend 1199" \
-      -c "exit" \
-      -c "route-map ROUTE-LEAK permit 20" \
-      -c " match ip address prefix-list EDGE-HIJACK-PREFIX" \
-      -c " set as-path prepend 65001" \
-      -c "exit" \
-      -c "route-map ROUTE-LEAK permit 30" \
-      -c "exit" \
-      -c "router bgp 65000" \
-      -c " address-family ipv4 unicast" \
-      -c "  neighbor 10.0.0.2 route-map ROUTE-LEAK out" \
-      -c " exit-address-family" \
-      -c "end" ; then
+  if ! docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+configure terminal
+ip prefix-list LEAK-PREFIX permit 145.102.136.0/22
+ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24
+route-map ROUTE-LEAK permit 10
+match ip address prefix-list LEAK-PREFIX
+set as-path prepend 1199
+exit
+route-map ROUTE-LEAK permit 20
+match ip address prefix-list EDGE-HIJACK-PREFIX
+set as-path prepend 65001
+exit
+route-map ROUTE-LEAK permit 30
+exit
+router bgp 65000
+address-family ipv4 unicast
+neighbor 10.0.0.2 route-map ROUTE-LEAK out
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1 ; then
     warn "Route-map install failed. Output:"
     docker exec clab-raven-demo-upstream vtysh -c "show running-config" 2>&1 | tail -20
   else
@@ -276,13 +263,14 @@ sys.exit(0 if match else 1)
 
   # ── Inject the unverified demo route (no ROA, no ASPA — shows all posture states) ──
   step "Injecting unverified demo route (10.99.99.0/24)..."
-  if ! docker exec clab-raven-demo-upstream vtysh \
-      -c "configure terminal" \
-      -c "router bgp 65000" \
-      -c " address-family ipv4 unicast" \
-      -c "  network 10.99.99.0/24" \
-      -c " exit-address-family" \
-      -c "end" ; then
+  if ! docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+configure terminal
+router bgp 65000
+address-family ipv4 unicast
+network 10.99.99.0/24
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1 ; then
     warn "Could not inject unverified demo route. Output:"
     docker exec clab-raven-demo-upstream vtysh -c "show running-config" 2>&1 | tail -20
   else
@@ -447,14 +435,15 @@ reset)
     -c "end" 2>/dev/null || true
 
   # Remove internet router hijack announcement
-  docker exec clab-raven-demo-internet vtysh \
-    -c "configure terminal" \
-    -c "no ip route 192.0.2.0/24 blackhole" \
-    -c "router bgp 2121" \
-    -c " address-family ipv4 unicast" \
-    -c "  no network 192.0.2.0/24" \
-    -c " exit-address-family" \
-    -c "end" 2>/dev/null || true
+  docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
+configure terminal
+no ip route 192.0.2.0/24 blackhole
+router bgp 64496
+address-family ipv4 unicast
+no network 192.0.2.0/24
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1 || true
 
   # Soft reset all BGP sessions to propagate cleanup
   docker exec clab-raven-demo-upstream vtysh \
@@ -490,26 +479,27 @@ hijack)
   echo ""
   echo "  Prefix:             192.0.2.0/24"
   echo "  Legitimate origin:  AS65000  (per ROA in Routinator)"
-  echo "  Hijacking router:   AS2121   (internet router — peer 10.0.0.1 via upstream)"
+  echo "  Hijacking router:   AS64496   (internet router — peer 10.0.0.1 via upstream)"
   echo ""
-  echo "  Method: internet router (AS2121) originates 192.0.2.0/24 directly."
-  echo "  Route travels AS2121 → AS65000 → AS65001, arriving as genuine pre-policy"
-  echo "  at RAVEN via BMP. Origin AS2121 ≠ ROA origin AS65000 → ROV Invalid."
+  echo "  Method: internet router (AS64496) originates 192.0.2.0/24 directly."
+  echo "  Route travels AS64496 → AS65000 → AS65001, arriving as genuine pre-policy"
+  echo "  at RAVEN via BMP. Origin AS64496 ≠ ROA origin AS65000 → ROV Invalid."
   echo ""
 
   step "Route table BEFORE hijack:"
   $RAVEN_BIN --address $RAVEN_ADDR routes | grep "192.0.2" || echo "  (not present — correct)"
   echo ""
 
-  step "Injecting hijack via internet router (AS2121)..."
-  docker exec clab-raven-demo-internet vtysh \
-    -c "configure terminal" \
-    -c "ip route 192.0.2.0/24 blackhole" \
-    -c "router bgp 2121" \
-    -c " address-family ipv4 unicast" \
-    -c "  network 192.0.2.0/24" \
-    -c " exit-address-family" \
-    -c "end"
+  step "Injecting hijack via internet router (AS64496)..."
+  docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
+configure terminal
+ip route 192.0.2.0/24 blackhole
+router bgp 64496
+address-family ipv4 unicast
+network 192.0.2.0/24
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1
 
   echo "  Waiting 5s for BMP propagation..."
   sleep 5
@@ -524,14 +514,15 @@ hijack)
 # ── HIJACK CLEAN ─────────────────────────────────────────────────────────────
 hijack-clean)
   header "Withdrawing Hijack"
-  docker exec clab-raven-demo-internet vtysh \
-    -c "configure terminal" \
-    -c "no ip route 192.0.2.0/24 blackhole" \
-    -c "router bgp 2121" \
-    -c " address-family ipv4 unicast" \
-    -c "  no network 192.0.2.0/24" \
-    -c " exit-address-family" \
-    -c "end"
+  docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
+configure terminal
+no ip route 192.0.2.0/24 blackhole
+router bgp 64496
+address-family ipv4 unicast
+no network 192.0.2.0/24
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1
   docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
     -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
@@ -547,14 +538,15 @@ hijack-clean)
 # ── HIJACK6 — IPv6 origin hijack ─────────────────────────────────────────────
 hijack6)
   header "Attack Scenario — IPv6 Origin Hijack"
-  echo "=== IPv6 Origin Hijack: AS65001 announcing AS2121's prefix ==="
-  sudo docker exec clab-raven-demo-edge vtysh \
-    -c "configure terminal" \
-    -c "router bgp 65001" \
-    -c " address-family ipv6 unicast" \
-    -c "  network 2001:db8:2121::/48" \
-    -c " exit-address-family" \
-    -c "end"
+  echo "=== IPv6 Origin Hijack: AS65099 announcing AS64496's prefix ==="
+  sudo docker exec clab-raven-demo-attacker bash -c "vtysh << 'VTYSH'
+configure terminal
+router bgp 65099
+address-family ipv6 unicast
+network 2001:db8:2121::/48
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1
   echo "Injected. Run: raven routes --prefix 2001:db8:2121::/48"
   ;;
 
@@ -562,13 +554,14 @@ hijack6)
 unhijack6)
   header "Withdrawing IPv6 Hijack"
   echo "=== Withdrawing IPv6 hijack ==="
-  sudo docker exec clab-raven-demo-edge vtysh \
-    -c "configure terminal" \
-    -c "router bgp 65001" \
-    -c " address-family ipv6 unicast" \
-    -c "  no network 2001:db8:2121::/48" \
-    -c " exit-address-family" \
-    -c "end"
+  sudo docker exec clab-raven-demo-attacker bash -c "vtysh << 'VTYSH'
+configure terminal
+router bgp 65099
+address-family ipv6 unicast
+no network 2001:db8:2121::/48
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1
   echo "Withdrawn."
   ;;
 
@@ -594,18 +587,19 @@ leak)
   echo ""
 
   # ── Step 2: Originate 145.102.136.0/22 on upstream (AS65000) ──
-  # The existing ROUTE-LEAK route-map (seq 10) prepends AS1199 on 145.102.136.0/22
+  # The existing LEAK-TO-EDGE route-map (seq 10) prepends AS1199 on 145.102.136.0/22
   # when sending to the edge neighbour, so edge receives AS_PATH [65000 1199].
   # AS65000 is not in AS1199's ASPA provider set (only AS1103) → ASPA:Invalid.
   step "Injecting 145.102.136.0/22 on upstream (AS65000) — simulating route leak..."
-  docker exec clab-raven-demo-upstream vtysh \
-    -c "configure terminal" \
-    -c "ip route 145.102.136.0/22 blackhole" \
-    -c "router bgp 65000" \
-    -c " address-family ipv4 unicast" \
-    -c "  network 145.102.136.0/22" \
-    -c " exit-address-family" \
-    -c "end"
+  docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+configure terminal
+ip route 145.102.136.0/22 blackhole
+router bgp 65000
+address-family ipv4 unicast
+network 145.102.136.0/22
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1
   echo "  Triggering soft outbound reset to push route to edge immediately..."
   docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
@@ -633,14 +627,15 @@ leak)
 # ── LEAK CLEAN ───────────────────────────────────────────────────────────────
 leak-clean)
   header "Withdrawing Route Leak"
-  docker exec clab-raven-demo-upstream vtysh \
-    -c "configure terminal" \
-    -c "no ip route 145.102.136.0/22 blackhole" \
-    -c "router bgp 65000" \
-    -c " address-family ipv4 unicast" \
-    -c "  no network 145.102.136.0/22" \
-    -c " exit-address-family" \
-    -c "end" > /dev/null 2>&1 || true
+  docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+configure terminal
+no ip route 145.102.136.0/22 blackhole
+router bgp 65000
+address-family ipv4 unicast
+no network 145.102.136.0/22
+exit-address-family
+end
+VTYSH" > /dev/null 2>&1 || true
   echo "  Triggering soft outbound reset to withdraw from edge..."
   docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
@@ -673,8 +668,8 @@ recommend)
   $RAVEN_BIN --address $RAVEN_ADDR aspa recommend --min-observations 1
   echo ""
 
-  step "ASPA record for AS2121 (from RTR cache):"
-  $RAVEN_BIN --address $RAVEN_ADDR aspa --asn 2121
+  step "ASPA record for AS64496 (from RTR cache):"
+  $RAVEN_BIN --address $RAVEN_ADDR aspa --asn 64496
   echo ""
 
   ok "Recommendations are heuristic — verify with your peers before registering objects."
@@ -1099,8 +1094,8 @@ lacnic)
   echo ""
 
   step "Scenario 4 — Route Leak (ASPA)"
-  echo "  Prefix: 193.0.0.0/21 (origin AS2121 / RIPE NCC)"
-  echo "  AS65000 not in AS2121 ASPA provider set → ASPA:Invalid → path-suspect"
+  echo "  Prefix: 145.102.136.0/22 (origin AS64496 / RIPE NCC)"
+  echo "  AS65000 not in AS64496 ASPA provider set → ASPA:Invalid → path-suspect"
   echo ""
   docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
@@ -1109,10 +1104,10 @@ lacnic)
     -c "end" > /dev/null 2>&1 || true
   docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
-    -c "ip route 193.0.0.0/21 blackhole" \
+    -c "ip route 145.102.136.0/22 blackhole" \
     -c "router bgp 65000" \
     -c "address-family ipv4 unicast" \
-    -c "network 193.0.0.0/21" \
+    -c "network 145.102.136.0/22" \
     -c "neighbor 10.0.0.2 route-map LEAK-INJECT out" \
     -c "exit-address-family" \
     -c "end"
@@ -1120,18 +1115,18 @@ lacnic)
     -c "configure terminal" \
     -c "route-map LEAK-INJECT permit 10" \
     -c "match ip address prefix-list LEAK-PREFIX" \
-    -c "set as-path prepend 2121" \
+    -c "set as-path prepend 64496" \
     -c "exit" \
     -c "route-map LEAK-INJECT permit 20" \
     -c "exit" \
-    -c "ip prefix-list LEAK-PREFIX permit 193.0.0.0/21" \
+    -c "ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
     -c "end"
   docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp 10.0.0.2 soft out"
   echo "  Waiting 5s for BMP propagation..."
   sleep 5
-  step "RAVEN detection — 193.0.0.0/21:"
-  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 193.0.0.0/21
+  step "RAVEN detection — 145.102.136.0/22:"
+  $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 145.102.136.0/22
   echo ""
   alert "ROUTE LEAK DETECTED — ASPA caught what ROV missed."
   echo ""
@@ -1139,10 +1134,10 @@ lacnic)
   step "Withdrawing route leak..."
   docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
-    -c "no ip route 193.0.0.0/21 blackhole" \
+    -c "no ip route 145.102.136.0/22 blackhole" \
     -c "router bgp 65000" \
     -c "address-family ipv4 unicast" \
-    -c "no network 193.0.0.0/21" \
+    -c "no network 145.102.136.0/22" \
     -c "no neighbor 10.0.0.2 route-map LEAK-INJECT out" \
     -c "exit-address-family" \
     -c "no route-map LEAK-INJECT" \
@@ -1196,24 +1191,39 @@ lacnic)
 # ── HELP ─────────────────────────────────────────────────────────────────────
 *)
   echo ""
-  echo "Usage: bash lab/demo-master.sh <command>"
+  echo "Usage: ./demo-master.sh <command>"
   echo ""
-  echo "  setup          Start full stack (lab, Routinator, RAVEN, Prometheus, Grafana)"
-  echo "  down           Stop everything in one command"
-  echo "  baseline       Show clean route table"
-  echo "  hijack         Inject origin hijack scenario"
-  echo "  hijack-clean   Withdraw the hijack"
-  echo "  hijack6        Inject IPv6 origin hijack scenario"
-  echo "  unhijack6      Withdraw the IPv6 hijack"
-  echo "  leak           Show route leak (ASPA) detection"
-  echo "  leak-clean     Withdraw the route leak"
-  echo "  whatif         Run what-if simulator"
-  echo "  recommend      Run ASPA recommender"
-  echo "  webhook-listen Start webhook listener on port 9999 (background)"
-  echo "  flowspec       Full Flowspec lifecycle: hijack → dry-run rule →"
-  echo "                 toggle live → GoBGP injection → withdraw"
-  echo "  audit [fmt]    Security posture audit for edge router (fmt: table|json|markdown)"
-  echo "  phase3         Full Phase 3 active-response demo sequence"
+  echo "Lifecycle:"
+  echo "  setup            Start full stack (lab + Routinator + RAVEN + Prometheus + Grafana)"
+  echo "  down             Stop everything"
+  echo "  reset            Kill stale raven and clear hijack/leak artifacts"
+  echo ""
+  echo "Routes & status:"
+  echo "  baseline         Show clean route table"
+  echo "  audit [fmt]      Security posture audit (fmt: table|json|markdown)"
+  echo ""
+  echo "Attack scenarios:"
+  echo "  hijack           Origin hijack via internet AS64496 (192.0.2.0/24)"
+  echo "  hijack-clean     Withdraw the hijack"
+  echo "  hijack6          IPv6 origin hijack via attacker AS65099 (2001:db8:2121::/48)"
+  echo "  unhijack6        Withdraw the IPv6 hijack"
+  echo "  hijack-v2        Origin hijack via attacker AS65099 (203.0.113.0/24)"
+  echo "  hijack-v2-clean  Withdraw AS65099 hijack"
+  echo "  leak             Route leak detected by ASPA (145.102.136.0/22)"
+  echo "  leak-clean       Withdraw the route leak"
+  echo "  stealthy         Stealthy hijack — control/data-plane divergence"
+  echo "  stealthy-clean   Withdraw the stealthy hijack"
+  echo "  rtr-fail         Demonstrate RTR cache failure handling"
+  echo ""
+  echo "Tooling:"
+  echo "  whatif           Run what-if simulator"
+  echo "  recommend        Run ASPA recommender"
+  echo "  flowspec         Flowspec lifecycle: detect → dry-run → toggle live → withdraw"
+  echo "  webhook-listen   Start webhook listener on port 9999"
+  echo ""
+  echo "Sequences:"
+  echo "  phase3           Full Phase 3 active-response demo sequence"
+  echo "  lacnic           LACNIC full demo sequence"
   echo ""
   ;;
 

@@ -49,7 +49,7 @@ wait_for_frr() {
   local timeout=30
   local elapsed=0
   echo -n "  Waiting for FRR in $container..."
-  while ! docker exec "$container" vtysh -c "show version" > /dev/null 2>&1; do
+  while ! sudo docker exec "$container" vtysh -c "show version" > /dev/null 2>&1; do
     sleep 2
     elapsed=$((elapsed + 2))
     echo -n "."
@@ -90,7 +90,7 @@ setup)
 
   if ! curl -s http://localhost:8323/api/v1/status | grep -q vrps; then
     warn "Routinator is not ready. Routes will not be annotated until sync completes."
-    warn "Start with: routinator server --config ~/.routinator.conf &"
+    warn "Start with: routinator -c ~/.routinator.conf --enable-aspa server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 &"
     warn "Cold start takes ~4 minutes. Warm start (if cache exists) takes ~13 seconds."
   fi
 
@@ -124,24 +124,24 @@ setup)
   wait_for_frr clab-raven-demo-edge
 
   # Remove hijack artifacts
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
     -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
     -c "end" 2>/dev/null || true
 
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp * soft out" 2>/dev/null || true
   echo "  Waiting for BGP to converge after cleanup..."
   sleep 5
 
   # Remove leak artifacts
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
     -c "no ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
     -c "end" 2>/dev/null || true
 
   # Remove internet router hijack announcement
-  docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
+  sudo docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
 configure terminal
 no ip route 192.0.2.0/24 blackhole
 router bgp 64496
@@ -159,7 +159,7 @@ VTYSH" > /dev/null 2>&1 || true
   # over RTR v2. Without it, AS64496's ASPA record (provider: AS3333) is
   # silently dropped and the route-leak scenario shows ASPA:Unknown instead
   # of ASPA:Invalid.
-  routinator --enable-aspa server > /tmp/routinator.log 2>&1 &
+  routinator -c ~/.routinator.conf --enable-aspa server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 > /tmp/routinator.log 2>&1 &
   # Routinator's /api/v1/status RTR serial fields stay null until a client
   # connects, so they aren't a reliable readiness signal. Instead, poll the
   # validity endpoint — it returns a "state" key once Routinator has finished
@@ -219,7 +219,7 @@ VTYSH" > /dev/null 2>&1 || true
   # seq 10: prepend AS1199 onto 145.102.136.0/22 → edge sees [65000,1199], ASPA invalid
   # seq 20: prepend AS65001 onto 10.10.0.0/24 → edge sees [65000,65001], origin-invalid
   # seq 30: catch-all permit — without this FRR denies all other routes to edge
-  if ! docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+  if ! sudo docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
 configure terminal
 ip prefix-list LEAK-PREFIX permit 145.102.136.0/22
 ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24
@@ -240,7 +240,7 @@ exit-address-family
 end
 VTYSH" > /dev/null 2>&1 ; then
     warn "Route-map install failed. Output:"
-    docker exec clab-raven-demo-upstream vtysh -c "show running-config" 2>&1 | tail -20
+    sudo docker exec clab-raven-demo-upstream vtysh -c "show running-config" 2>&1 | tail -20
   else
     ok "ROUTE-LEAK route-map installed on upstream"
   fi
@@ -249,7 +249,7 @@ VTYSH" > /dev/null 2>&1 ; then
   # prefix-list to reference, but at baseline it must be empty — otherwise
   # 10.10.0.0/24 gets AS65001 prepended and shows origin-invalid before any
   # hijack scenario runs. The hijack) case re-adds the entry during injection.
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
     -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
     -c "end"
@@ -257,13 +257,13 @@ VTYSH" > /dev/null 2>&1 ; then
   # Trigger a soft outbound reset so upstream resends all routes to edge
   # with the newly applied ROUTE-LEAK route-map (updated AS-paths)
   echo "  Triggering soft reset to push updated AS-paths to edge..."
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
   sleep 5
 
   # ── Inject the unverified demo route (no ROA, no ASPA — shows all posture states) ──
   step "Injecting unverified demo route (10.99.99.0/24)..."
-  if ! docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+  if ! sudo docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
 configure terminal
 router bgp 65000
 address-family ipv4 unicast
@@ -272,7 +272,7 @@ exit-address-family
 end
 VTYSH" > /dev/null 2>&1 ; then
     warn "Could not inject unverified demo route. Output:"
-    docker exec clab-raven-demo-upstream vtysh -c "show running-config" 2>&1 | tail -20
+    sudo docker exec clab-raven-demo-upstream vtysh -c "show running-config" 2>&1 | tail -20
   else
     sleep 3
     ok "Unverified route injected (no ROA = unverified posture in Grafana)"
@@ -423,19 +423,19 @@ reset)
   fi
 
   # Remove hijack artifacts
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
     -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
     -c "end" 2>/dev/null || true
 
   # Remove leak artifacts
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
     -c "no ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
     -c "end" 2>/dev/null || true
 
   # Remove internet router hijack announcement
-  docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
+  sudo docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
 configure terminal
 no ip route 192.0.2.0/24 blackhole
 router bgp 64496
@@ -446,9 +446,9 @@ end
 VTYSH" > /dev/null 2>&1 || true
 
   # Soft reset all BGP sessions to propagate cleanup
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp * soft" 2>/dev/null || true
-  docker exec clab-raven-demo-internet vtysh \
+  sudo docker exec clab-raven-demo-internet vtysh \
     -c "clear ip bgp * soft" 2>/dev/null || true
 
   echo ""
@@ -491,7 +491,7 @@ hijack)
   echo ""
 
   step "Injecting hijack via internet router (AS64496)..."
-  docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
+  sudo docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
 configure terminal
 ip route 192.0.2.0/24 blackhole
 router bgp 64496
@@ -514,7 +514,7 @@ VTYSH" > /dev/null 2>&1
 # ── HIJACK CLEAN ─────────────────────────────────────────────────────────────
 hijack-clean)
   header "Withdrawing Hijack"
-  docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
+  sudo docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
 configure terminal
 no ip route 192.0.2.0/24 blackhole
 router bgp 64496
@@ -523,7 +523,7 @@ no network 192.0.2.0/24
 exit-address-family
 end
 VTYSH" > /dev/null 2>&1
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
     -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
     -c "do clear ip bgp 10.0.0.2 soft out" \
@@ -591,7 +591,7 @@ leak)
   # when sending to the edge neighbour, so edge receives AS_PATH [65000 1199].
   # AS65000 is not in AS1199's ASPA provider set (only AS1103) → ASPA:Invalid.
   step "Injecting 145.102.136.0/22 on upstream (AS65000) — simulating route leak..."
-  docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+  sudo docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
 configure terminal
 ip route 145.102.136.0/22 blackhole
 router bgp 65000
@@ -601,7 +601,7 @@ exit-address-family
 end
 VTYSH" > /dev/null 2>&1
   echo "  Triggering soft outbound reset to push route to edge immediately..."
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
   echo "  Waiting 5s for BMP propagation..."
   sleep 5
@@ -627,7 +627,7 @@ VTYSH" > /dev/null 2>&1
 # ── LEAK CLEAN ───────────────────────────────────────────────────────────────
 leak-clean)
   header "Withdrawing Route Leak"
-  docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+  sudo docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
 configure terminal
 no ip route 145.102.136.0/22 blackhole
 router bgp 65000
@@ -637,7 +637,7 @@ exit-address-family
 end
 VTYSH" > /dev/null 2>&1 || true
   echo "  Triggering soft outbound reset to withdraw from edge..."
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
   sleep 4
   step "Route table after withdrawal:"
@@ -869,7 +869,7 @@ hijack-v2)
   echo ""
 
   step "Injecting hijack from attacker (AS65099)..."
-  docker exec $ATTACKER_CONTAINER vtysh \
+  sudo docker exec $ATTACKER_CONTAINER vtysh \
     -c "configure terminal" \
     -c "ip route 203.0.113.0/24 blackhole" \
     -c "router bgp 65099" \
@@ -890,7 +890,7 @@ hijack-v2)
 # ── HIJACK V2 CLEAN ──────────────────────────────────────────────────────────
 hijack-v2-clean)
   header "Withdrawing AS65099 Hijack"
-  docker exec $ATTACKER_CONTAINER vtysh \
+  sudo docker exec $ATTACKER_CONTAINER vtysh \
     -c "configure terminal" \
     -c "no ip route 203.0.113.0/24 blackhole" \
     -c "router bgp 65099" \
@@ -921,7 +921,7 @@ stealthy)
   echo ""
 
   step "Injecting stealthy /25 from attacker (AS65099)..."
-  docker exec clab-raven-demo-attacker vtysh \
+  sudo docker exec clab-raven-demo-attacker vtysh \
     -c "configure terminal" \
     -c "router bgp 65099" \
     -c "address-family ipv4 unicast" \
@@ -947,7 +947,7 @@ stealthy)
   echo ""
 
   read -p "  [ENTER to clean up]" _
-  docker exec clab-raven-demo-attacker vtysh \
+  sudo docker exec clab-raven-demo-attacker vtysh \
     -c "configure terminal" \
     -c "router bgp 65099" \
     -c "address-family ipv4 unicast" \
@@ -959,7 +959,7 @@ stealthy)
 # ── STEALTHY CLEAN (no prompts) ──────────────────────────────────────────────
 stealthy-clean)
   header "Withdrawing Stealthy Hijack"
-  docker exec clab-raven-demo-attacker vtysh \
+  sudo docker exec clab-raven-demo-attacker vtysh \
     -c "configure terminal" \
     -c "router bgp 65099" \
     -c "address-family ipv4 unicast" \
@@ -1000,7 +1000,7 @@ rtr-fail)
   echo ""
 
   alert "Restoring Routinator..."
-  routinator --enable-aspa server >> /tmp/routinator.log 2>&1 &
+  routinator -c ~/.routinator.conf --enable-aspa server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 >> /tmp/routinator.log 2>&1 &
   sleep 15
 
   step "RAVEN RTR status after restore..."
@@ -1028,7 +1028,7 @@ lacnic)
   alert "INJECTING BGP ORIGIN HIJACK FROM ATTACKER (AS65099)"
   echo "  Prefix: 203.0.113.0/24 (legitimate origin AS65001) → hijacked by AS65099"
   echo ""
-  docker exec $ATTACKER_CONTAINER vtysh \
+  sudo docker exec $ATTACKER_CONTAINER vtysh \
     -c "configure terminal" \
     -c "ip route 203.0.113.0/24 blackhole" \
     -c "router bgp 65099" \
@@ -1042,7 +1042,7 @@ lacnic)
   echo ""
   read -p "  [ENTER to clean up and continue]" _
   step "Withdrawing AS65099 hijack..."
-  docker exec $ATTACKER_CONTAINER vtysh \
+  sudo docker exec $ATTACKER_CONTAINER vtysh \
     -c "configure terminal" \
     -c "no ip route 203.0.113.0/24 blackhole" \
     -c "router bgp 65099" \
@@ -1063,7 +1063,7 @@ lacnic)
   $RAVEN_BIN --address $RAVEN_ADDR routes --prefix 203.0.113.0/24
   echo ""
   step "Injecting stealthy /25 from attacker (AS65099)..."
-  docker exec $ATTACKER_CONTAINER vtysh \
+  sudo docker exec $ATTACKER_CONTAINER vtysh \
     -c "configure terminal" \
     -c "router bgp 65099" \
     -c "address-family ipv4 unicast" \
@@ -1083,7 +1083,7 @@ lacnic)
   echo ""
   read -p "  [ENTER to clean up and continue]" _
   step "Withdrawing stealthy hijack..."
-  docker exec $ATTACKER_CONTAINER vtysh \
+  sudo docker exec $ATTACKER_CONTAINER vtysh \
     -c "configure terminal" \
     -c "router bgp 65099" \
     -c "address-family ipv4 unicast" \
@@ -1100,7 +1100,7 @@ lacnic)
   echo "             prepends AS1199 → edge sees AS_PATH [65000 1199]"
   echo "  Result: ROV:Valid (AS1199 has ROA) + ASPA:Invalid → path-suspect"
   echo ""
-  docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+  sudo docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
 configure terminal
 ip route 145.102.136.0/22 blackhole
 router bgp 65000
@@ -1110,7 +1110,7 @@ exit-address-family
 end
 VTYSH" > /dev/null 2>&1
   echo "  Triggering soft outbound reset to push route to edge immediately..."
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
   echo "  Waiting 5s for BMP propagation..."
   sleep 5
@@ -1121,7 +1121,7 @@ VTYSH" > /dev/null 2>&1
   echo ""
   read -p "  [ENTER to clean up and continue]" _
   step "Withdrawing route leak..."
-  docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
+  sudo docker exec clab-raven-demo-upstream bash -c "vtysh << 'VTYSH'
 configure terminal
 no ip route 145.102.136.0/22 blackhole
 router bgp 65000
@@ -1130,7 +1130,7 @@ no network 145.102.136.0/22
 exit-address-family
 end
 VTYSH" > /dev/null 2>&1 || true
-  docker exec clab-raven-demo-upstream vtysh \
+  sudo docker exec clab-raven-demo-upstream vtysh \
     -c "clear ip bgp 10.0.0.2 soft out" 2>/dev/null || true
   sleep 4
   ok "Route leak withdrawn."
@@ -1159,7 +1159,7 @@ VTYSH" > /dev/null 2>&1 || true
   done
   echo ""
   alert "Restoring Routinator..."
-  routinator --enable-aspa server >> /tmp/routinator.log 2>&1 &
+  routinator -c ~/.routinator.conf --enable-aspa server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 >> /tmp/routinator.log 2>&1 &
   sleep 5
   step "RAVEN RTR status after restore..."
   $RAVEN_BIN --address $RAVEN_ADDR status

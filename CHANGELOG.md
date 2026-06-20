@@ -2,7 +2,21 @@
 
 All notable changes to RAVEN are recorded here.
 
-## v0.3.1 (2026-06-09)
+## v0.3.2 (2026-06-16)
+
+### Fixed
+- Demo lab: all `docker exec` calls in `demo-master.sh` now use `sudo` (silent
+  injection failures occurred when run without root)
+- Demo lab: `setup()` now injects `LEAK-PREFIX` prefix-list into running FRR
+  containers via `vtysh` post-deploy; Containerlab mounts `frr.conf` but FRR
+  does not reload on redeploy, causing the leak scenario to fail on cold start
+- Demo lab: Routinator 0.15.1 changed CLI syntax; `--config` flag must now be
+  passed as a global flag before the subcommand
+  (`routinator -c ~/.routinator.conf server`) not after it
+- Grafana: BGP Peers panel filtered to IPv4-only peers and panel height
+  increased (IPv6 peer additions doubled tile count, causing overflow)
+
+## v0.3.1 (2026-06-08)
 
 ### Added
 - IPv6 route monitoring via BMP (`MP_REACH_NLRI` / `MP_UNREACH_NLRI` parsing)
@@ -27,10 +41,10 @@ All notable changes to RAVEN are recorded here.
 - Demo lab internet router ASN changed from AS2121 to AS64496 to avoid
   spurious `path-suspect` at baseline caused by real-world RPKI/ASPA
   records for AS2121
-  
-## [0.2.0] - 2026-05-26
 
-### Active Response (Phase 3)
+## v0.3.0 (2026-05-26)
+
+### Added
 - Event Engine: configurable triggers on posture changes
   (ROV state change, new route with specific posture,
   RTR cache failure) with webhook HTTP POST and file
@@ -48,23 +62,37 @@ All notable changes to RAVEN are recorded here.
 - Warm-start persistence: snapshot route table and RPKI
   caches to disk on shutdown, restore on startup
 - OpenTelemetry OTLP metrics export alongside Prometheus
-
-### Transport Security
 - RTR-over-TLS: configure `transport: tls` and optional
   CA cert under any RTR cache entry
 - BMP listener TLS: optional TLS termination on the BMP
   listener with mutual TLS support
+- Event Engine ASN triggers: `asn` and `protected_asn`
+  trigger types (contributed by Orange/AS3215)
 
-### Bug Fixes
+### Fixed
 - RTR `rtr-version` config field now correctly wired
   through to the client (was previously ignored)
 - TCP socket buffer tuning skipped for TLS connections
   (prevented TLS sessions from establishing on some
   platforms)
 
-## [0.1.0] - 2026-04-15
+## v0.2.0 (2026-05-18)
 
-Initial public release — Phase 1 (Foundation) and Phase 2 (ASPA Intelligence) complete.
+### Added
+- ASPA path verification per draft-ietf-sidrops-aspa-verification-24
+- Combined security posture matrix: Secured / Origin-Only / Path-Suspect /
+  Path-Only / Unverified / Origin-Invalid
+- ASPA store populated via RTR v2 ASPA PDUs; re-validation on ASPA
+  store updates via dirty-set propagation
+- `raven aspa` — show ASPA records for an ASN
+- `raven aspa recommend` — suggest ASPA objects based on observed paths
+- `raven what-if` — simulate impact of reject-invalid or ASPA enforcement
+- `raven watch` — stream live validation state changes
+- Prometheus posture metrics reflect full ROV × ASPA matrix
+
+## v0.1.0 (2026-04-15)
+
+Initial public release — Phase 1 (Foundation) complete.
 
 ### BMP Ingest
 - Embedded BMP receiver (RFC 7854) on configurable TCP port (default: 11019)
@@ -75,15 +103,11 @@ Initial public release — Phase 1 (Foundation) and Phase 2 (ASPA Intelligence) 
 ### RPKI / RTR Client
 - RTR v1 (RFC 8210) and RTR v2 (draft-ietf-sidrops-8210bis) client
 - VRP store for Route Origin Validation
-- ASPA store for AS_PATH validation (populated via RTR v2 ASPA PDUs)
 - Multi-cache support with preference ordering and automatic failover
 - Re-validation on RPKI cache updates via dirty-set propagation
 
 ### Validation Engine
 - Route Origin Validation (ROV) per RFC 6811: Valid / Invalid / NotFound
-- ASPA path verification per draft-ietf-sidrops-aspa-verification-24
-- Combined security posture: Secured / Origin-Only / Path-Suspect /
-  Path-Only / Unverified / Origin-Invalid
 
 ### CLI
 - `raven serve` — start daemon
@@ -91,16 +115,11 @@ Initial public release — Phase 1 (Foundation) and Phase 2 (ASPA Intelligence) 
 - `raven peers` — list BMP peers
 - `raven routes` — query route table with filters (prefix, origin-asn, peer, posture)
 - `raven validate` — one-shot prefix validation
-- `raven watch` — stream live validation state changes
-- `raven aspa` — show ASPA records for an ASN
-- `raven aspa recommend` — suggest ASPA objects based on observed paths
-- `raven what-if` — simulate impact of reject-invalid or ASPA enforcement
 
 ### Observability
 - Prometheus metrics endpoint (default: 9595)
 - Pre-built Grafana dashboards (Security Posture Overview, Per-Peer Deep Dive)
 
 ### Demo Lab
-- Containerlab topology: internet AS2121 → upstream AS65000 → edge AS65001
-- Scripted demo scenarios: origin hijack, more-specific hijack, route leak
-- What-if simulation and ASPA recommender demo commands
+- Containerlab topology: internet AS64496 → upstream AS65000 → edge AS65001
+- Scripted demo scenarios: origin hijack, route leak

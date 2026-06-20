@@ -64,7 +64,7 @@ func BuildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 
 	out := &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   cfg.TLSMinVersion(),
 	}
 
 	if cfg.CA != "" {

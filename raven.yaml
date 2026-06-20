@@ -1,5 +1,10 @@
 bmp:
   listen: "0.0.0.0:11019"
+  # tls:
+  #   cert: /etc/raven/bmp.crt
+  #   key: /etc/raven/bmp.key
+  #   ca: /etc/raven/bmp-ca.crt        # Optional: enables mutual TLS (client cert required)
+  #   tls-min-version: "1.2"           # Optional: minimum TLS version — "1.2" (default) or "1.3"
 
 rtr:
   rtr-version: auto
@@ -7,6 +12,11 @@ rtr:
     - address: "localhost:3323"
       preference: 1
       transport: tcp
+      # tls:
+      #   ca: /etc/raven/rtr-ca.crt
+      #   cert: /etc/raven/rtr-client.crt
+      #   key: /etc/raven/rtr-client.key
+      #   tls-min-version: "1.2"       # Optional: minimum TLS version — "1.2" (default) or "1.3"
 
 validation:
   rov: true

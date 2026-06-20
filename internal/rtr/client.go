@@ -94,7 +94,7 @@ func NewClient(address string, transport string, tlsCfg *config.TLSConfig, vrpSt
 // buildTLSConfig assembles a *tls.Config from the user-supplied paths.
 // A nil cfg or empty CA falls back to the system root pool.
 func buildTLSConfig(cfg *config.TLSConfig, log *slog.Logger) (*tls.Config, error) {
-	out := &tls.Config{MinVersion: tls.VersionTLS12}
+	out := &tls.Config{MinVersion: cfg.TLSMinVersion()}
 
 	if cfg == nil || cfg.CA == "" {
 		log.Warn("RTR TLS configured without a custom CA; using system root pool")

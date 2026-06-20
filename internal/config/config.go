@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"time"
 
@@ -158,6 +159,19 @@ type TLSConfig struct {
 	CA   string `mapstructure:"ca"`
 	Cert string `mapstructure:"cert"`
 	Key  string `mapstructure:"key"`
+	// MinVersion locks the minimum negotiated TLS version: "1.2" or "1.3".
+	// Empty (or absent) defaults to "1.2" so existing deployments are unaffected.
+	MinVersion string `mapstructure:"tls-min-version"`
+}
+
+// TLSMinVersion resolves the configured minimum TLS version to a crypto/tls
+// constant. Anything other than "1.3" (including empty or a nil receiver)
+// resolves to TLS 1.2, preserving the historical default.
+func (t *TLSConfig) TLSMinVersion() uint16 {
+	if t != nil && t.MinVersion == "1.3" {
+		return tls.VersionTLS13
+	}
+	return tls.VersionTLS12
 }
 
 type ValidationConfig struct {

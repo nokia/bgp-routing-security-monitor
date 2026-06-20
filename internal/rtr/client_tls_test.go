@@ -192,4 +192,51 @@ func TestRTRClientTLS(t *testing.T) {
 			t.Fatalf("expected connect error, got: %v", err)
 		}
 	})
+
+	t.Run("rejects when tls-min-version exceeds server max", func(t *testing.T) {
+		// Server caps the handshake at TLS 1.2 while the client pins a minimum of
+		// TLS 1.3. If TLSMinVersion() is wired into the dialed tls.Config, the two
+		// ranges don't overlap and the handshake must fail with a version error.
+		// A passing handshake here would mean the field was silently ignored.
+		srvCfg := &tls.Config{
+			Certificates: []tls.Certificate{serverCert},
+			MinVersion:   tls.VersionTLS12,
+			MaxVersion:   tls.VersionTLS12,
+		}
+		ln, err := tls.Listen("tcp", "127.0.0.1:0", srvCfg)
+		if err != nil {
+			t.Fatalf("tls.Listen: %v", err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		go func() {
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				if tc, ok := conn.(*tls.Conn); ok {
+					tc.Handshake() // expected to fail on version mismatch
+				}
+				conn.Close()
+			}
+		}()
+
+		client, err := NewClient(ln.Addr().String(), "tls",
+			&config.TLSConfig{CA: caPath, MinVersion: "1.3"},
+			store.NewVRPStore(), store.NewASPAStore(), 2, log)
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		err = client.runSession(ctx)
+		if err == nil {
+			t.Fatal("expected TLS version mismatch error, got nil")
+		}
+		if !strings.Contains(err.Error(), "connect") {
+			t.Fatalf("expected connect error, got: %v", err)
+		}
+	})
 }

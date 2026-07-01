@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/nokia/bgp-routing-security-monitor/internal/config"
 	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
@@ -38,6 +40,12 @@ const (
 // RTR header is 8 bytes: version(1) + type(1) + sessionID(2) + length(4)
 const rtrHeaderLen = 8
 
+// rtrReadTimeout bounds a single blocking PDU read. It is refreshed after each
+// successful read, so it only fires when the cache goes silent — at which
+// point a cancelled context shuts the loop down cleanly and a live context
+// triggers a reconnect.
+const rtrReadTimeout = 65 * time.Second
+
 // Client maintains an RTR session with a single RPKI validator cache.
 type Client struct {
 	address         string
@@ -55,6 +63,15 @@ type Client struct {
 	onUpdate        func()
 	readyOnce       sync.Once
 	ready           chan struct{}
+
+	// Telemetry (optional). A nil recorder is a safe no-op.
+	tel           *telemetry.Recorder
+	syncStart     time.Time // when the current sync's query was sent
+	lastSyncTime  time.Time // EndOfData time of the previous completed sync
+	vrpAnnounced  int       // per-sync counters, reset on each Cache Response
+	vrpWithdrawn  int
+	aspaAnnounced int
+	aspaWithdrawn int
 }
 
 // NewClient creates an RTR client that syncs VRPs into the given store.
@@ -129,6 +146,12 @@ func (c *Client) Ready() <-chan struct{} {
 // SetOnUpdate sets a callback invoked after each VRP store update.
 func (c *Client) SetOnUpdate(fn func()) {
 	c.onUpdate = fn
+}
+
+// SetTelemetry attaches a telemetry recorder. Passing nil (or never calling
+// this) disables telemetry; all recording calls become no-ops.
+func (c *Client) SetTelemetry(rec *telemetry.Recorder) {
+	c.tel = rec
 }
 
 // Start connects to the RTR cache and maintains the session.
@@ -210,18 +233,29 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 
 	c.log.Info("RTR session established", "transport", c.transport)
+	c.tel.Record(telemetry.SessionEvent{
+		Cache:        c.address,
+		EventType:    telemetry.EventConnected,
+		ProtoVersion: c.protoVersion,
+	})
 	metrics.RTRSessionState.WithLabelValues(c.address).Set(1)
 	defer metrics.RTRSessionState.WithLabelValues(c.address).Set(0)
 	metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.Count()))
 
 	// Send Reset Query to get the full VRP set
 	c.fullSyncPending = true
+	c.syncStart = time.Now()
 	if err := c.sendResetQuery(conn); err != nil {
 		return fmt.Errorf("send reset query: %w", err)
 	}
 
 	// Buffered reader — critical for draining large VRP table dumps
 	reader := bufio.NewReaderSize(conn, 4*1024*1024) // 4MB read buffer
+
+	// Bound each blocking read so ctx cancellation can unblock the loop within
+	// the deadline window instead of parking indefinitely on a silent cache.
+	// The deadline is refreshed after every successful PDU read below.
+	conn.SetReadDeadline(time.Now().Add(rtrReadTimeout))
 
 	// Read PDUs until the session ends
 	for {
@@ -230,12 +264,33 @@ func (c *Client) runSession(ctx context.Context) error {
 		}
 		pduType, sessionID, payload, err := c.readPDU(reader)
 		if err != nil {
+			// A read deadline timeout is benign: it exists only so ctx
+			// cancellation can unblock this parked read. If the context is
+			// cancelled, shut down cleanly; otherwise the cache is merely idle,
+			// so refresh the deadline and keep waiting — never reconnect.
+			if isTimeout(err) {
+				if ctx.Err() != nil {
+					return nil
+				}
+				conn.SetReadDeadline(time.Now().Add(rtrReadTimeout))
+				continue
+			}
+			// Non-timeout failure: exit cleanly if we're shutting down,
+			// otherwise propagate so Start reconnects with backoff.
+			if ctx.Err() != nil {
+				return nil
+			}
 			return fmt.Errorf("read PDU: %w", err)
 		}
+		conn.SetReadDeadline(time.Now().Add(rtrReadTimeout))
 
 		switch pduType {
 		case PDUCacheResponse:
 			c.log.Debug("cache response", "session_id", sessionID)
+			// Reset per-sync counters at the start of each cache response so
+			// the EndOfData telemetry reflects only this sync's deltas.
+			c.vrpAnnounced, c.vrpWithdrawn = 0, 0
+			c.aspaAnnounced, c.aspaWithdrawn = 0, 0
 			// If we're servicing a Reset Query, clear the stores so the
 			// incoming full snapshot replaces rather than appends. Without
 			// this, every reconnect doubles the VRP store size.
@@ -252,8 +307,10 @@ func (c *Client) runSession(ctx context.Context) error {
 			}
 			if withdraw {
 				c.vrpStore.RemoveVRP(vrp)
+				c.vrpWithdrawn++
 			} else {
 				c.vrpStore.AddVRP(vrp)
+				c.vrpAnnounced++
 			}
 
 		case PDUIPv6Prefix:
@@ -264,8 +321,10 @@ func (c *Client) runSession(ctx context.Context) error {
 			}
 			if withdraw {
 				c.vrpStore.RemoveVRP(vrp)
+				c.vrpWithdrawn++
 			} else {
 				c.vrpStore.AddVRP(vrp)
+				c.vrpAnnounced++
 			}
 
 		case PDUASPA:
@@ -278,10 +337,12 @@ func (c *Client) runSession(ctx context.Context) error {
 				for _, p := range providerASNs {
 					c.aspaStore.RemoveProvider(customerASN, p)
 				}
+				c.aspaWithdrawn++
 			} else {
 				for _, p := range providerASNs {
 					c.aspaStore.AddProvider(customerASN, p)
 				}
+				c.aspaAnnounced++
 			}
 
 		case PDUEndOfData:
@@ -292,6 +353,34 @@ func (c *Client) runSession(ctx context.Context) error {
 			}
 			c.vrpStore.SetSerial(serial, sessionID)
 			c.vrpStore.RebuildIndex() // build index once after full sync
+
+			// Emit sync telemetry before clearing fullSyncPending, which
+			// distinguishes a full (Reset Query) from an incremental sync.
+			now := time.Now()
+			syncType := telemetry.SyncTypeIncremental
+			if c.fullSyncPending {
+				syncType = telemetry.SyncTypeFull
+			}
+			ev := telemetry.SessionEvent{
+				Timestamp:     now,
+				Cache:         c.address,
+				EventType:     telemetry.EventSync,
+				Serial:        serial,
+				VRPTotal:      int(c.vrpStore.Count()),
+				VRPAnnounced:  c.vrpAnnounced,
+				VRPWithdrawn:  c.vrpWithdrawn,
+				ASPATotal:     c.aspaStore.Count(),
+				ASPAAnnounced: c.aspaAnnounced,
+				ASPAWithdrawn: c.aspaWithdrawn,
+				SyncDuration:  now.Sub(c.syncStart),
+				SyncType:      syncType,
+			}
+			if !c.lastSyncTime.IsZero() {
+				ev.IntervalSince = now.Sub(c.lastSyncTime)
+			}
+			c.tel.Record(ev)
+			c.lastSyncTime = now
+
 			c.fullSyncPending = false
 			metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.Count()))
 			metrics.RTRLastSync.WithLabelValues(c.address).Set(float64(time.Now().Unix()))
@@ -315,6 +404,7 @@ func (c *Client) runSession(ctx context.Context) error {
 				serial := binary.BigEndian.Uint32(payload[0:4])
 				c.log.Debug("serial notify", "serial", serial)
 				// Send Serial Query for incremental update
+				c.syncStart = time.Now()
 				if err := c.sendSerialQuery(conn, sessionID, c.vrpStore.Serial()); err != nil {
 					return fmt.Errorf("send serial query: %w", err)
 				}
@@ -322,7 +412,13 @@ func (c *Client) runSession(ctx context.Context) error {
 
 		case PDUCacheReset:
 			c.log.Warn("cache reset received, performing full sync")
+			c.tel.Record(telemetry.SessionEvent{
+				Cache:       c.address,
+				EventType:   telemetry.EventReset,
+				ResetReason: telemetry.ResetReasonCacheResetPDU,
+			})
 			c.fullSyncPending = true
+			c.syncStart = time.Now()
 			if err := c.sendResetQuery(conn); err != nil {
 				return fmt.Errorf("send reset query after cache reset: %w", err)
 			}
@@ -330,6 +426,12 @@ func (c *Client) runSession(ctx context.Context) error {
 		case PDUErrorReport:
 			errMsg := c.parseErrorReport(payload)
 			c.log.Error("RTR error report from cache", "error_text", errMsg)
+			c.tel.Record(telemetry.SessionEvent{
+				Cache:        c.address,
+				EventType:    telemetry.EventError,
+				ErrorText:    errMsg,
+				ProtoVersion: c.protoVersion,
+			})
 
 			// Version negotiation fallback: 2 → 1 → 0
 			switch c.protoVersion {
@@ -349,6 +451,16 @@ func (c *Client) runSession(ctx context.Context) error {
 			c.log.Debug("unknown RTR PDU type", "type", pduType)
 		}
 	}
+}
+
+// isTimeout reports whether err is an I/O deadline expiry, covering both the
+// os.ErrDeadlineExceeded sentinel and the net.Error Timeout() interface.
+func isTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // readPDU reads a single RTR PDU from the connection.

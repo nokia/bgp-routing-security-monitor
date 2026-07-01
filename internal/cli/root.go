@@ -60,6 +60,7 @@ func init() {
 	rootCmd.AddCommand(newAuditCmd(&addr))
 	rootCmd.AddCommand(newFlowspecCmd(&addr))
 	rootCmd.AddCommand(checkCmd)
+	rootCmd.AddCommand(newRTRCmd())
 }
 
 func initConfig() {

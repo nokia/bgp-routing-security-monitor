@@ -78,6 +78,15 @@ client; no validation or BMP ingestion happens here.`,
 			}
 			client.SetTelemetry(rec)
 
+			// Drain the telemetry event channel: no anomaly detector consumes
+			// it in this command, so without a reader the buffer would fill and
+			// Record would drop events (logging a warning each time). This
+			// goroutine exits when rec.Close() closes the channel at shutdown.
+			go func() {
+				for range rec.Events() {
+				}
+			}()
+
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 

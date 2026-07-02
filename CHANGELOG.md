@@ -2,6 +2,40 @@
 
 All notable changes to RAVEN are recorded here.
 
+## v0.3.3 (2026-07-02)
+
+### Added
+- RTR session telemetry: structured per-sync event capture (VRP/ASPA
+  announced/withdrawn deltas, sync duration, interval between serial
+  advances, sync type full vs incremental) wired into the RTR client
+  at four points: session connect, EndOfData, PDUCacheReset, and
+  PDUErrorReport. Events written as NDJSON and mirrored on a buffered
+  channel for downstream consumers.
+- `raven rtr monitor` command: standalone RTR cache observer for
+  baseline data collection and diagnostics. Config-file-free (flags
+  only: `--cache`, `--log-file`, `--transport`, `--prometheus`).
+  Graceful shutdown with bounded 70s grace period. Optional Prometheus
+  endpoint. Useful for characterising normal RTR behaviour before
+  deploying full RAVEN.
+- `tls-min-version` config option for RTR and BMP TLS transports.
+  Accepts `1.2` or `1.3`; defaults to TLS 1.2 minimum. Addresses
+  operator transport security requirements (Orange/AS3215).
+
+### Fixed
+- RTR client: 65s read deadline with benign-timeout handling prevents
+  shutdown from blocking indefinitely on idle caches while avoiding
+  spurious reconnects on healthy sessions.
+- RTR client: proto version reset to configured starting version on
+  each reconnect, preventing permanent version downgrade caused by
+  transient errors during cache startup.
+- Telemetry event channel drained in standalone `rtr monitor` mode
+  to prevent buffer fill and drop warnings during sustained reconnect
+  loops.
+
+### Changed
+- Grafana: BGP Peers panel filtered to IPv4-only peers, height
+  increased to accommodate IPv6 peer additions.
+
 ## v0.3.2 (2026-06-16)
 
 ### Fixed

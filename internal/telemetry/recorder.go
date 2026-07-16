@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,6 +75,67 @@ func (r *Recorder) Record(ev SessionEvent) {
 	default:
 		r.log.Warn("telemetry event channel full, dropping event", "cache", ev.Cache, "event_type", ev.EventType)
 	}
+}
+
+// anomalyRecord is the NDJSON form of a detected anomaly, written to the same
+// sink as SessionEvent. event_type is always "anomaly".
+type anomalyRecord struct {
+	Timestamp time.Time          `json:"timestamp"`
+	Cache     string             `json:"cache"`
+	EventType string             `json:"event_type"`
+	Category  string             `json:"category"`
+	Trigger   string             `json:"trigger"`
+	Severity  string             `json:"severity"`
+	ZScores   map[string]float64 `json:"z_scores,omitempty"`
+	Raw       map[string]float64 `json:"raw,omitempty"`
+}
+
+// RecordAnomaly writes ev as an NDJSON "anomaly" record to the same sink as
+// Record, serialized by the same mutex so an anomaly line never interleaves
+// with a SessionEvent line. Unlike Record it does not echo onto the event
+// channel: anomalies are terminal outputs, not inputs to further detection.
+// Safe to call on a nil Recorder (no-op).
+func (r *Recorder) RecordAnomaly(ev *AnomalyEvent) {
+	if r == nil || ev == nil {
+		return
+	}
+	rec := anomalyRecord{
+		Timestamp: ev.Timestamp,
+		Cache:     ev.Cache,
+		EventType: "anomaly",
+		Category:  ev.Category,
+		Trigger:   anomalyTrigger(ev),
+		Severity:  ev.Severity,
+		ZScores:   ev.ZScores,
+		Raw:       ev.Raw,
+	}
+
+	r.mu.Lock()
+	if err := r.enc.Encode(rec); err != nil {
+		r.log.Error("failed to write anomaly event", "error", err, "cache", ev.Cache, "trigger", rec.Trigger)
+	}
+	r.mu.Unlock()
+}
+
+// anomalyTrigger derives the record's trigger string. On a correlated trip the
+// detector sets Trigger == "correlated"; the record instead lists the metrics
+// that crossed the soft threshold, joined with "+" in canonical order for
+// readable logs and demos. Any other trigger (a hard-trip metric name or a
+// structural event type) passes through unchanged.
+func anomalyTrigger(ev *AnomalyEvent) string {
+	if ev.Trigger != "correlated" {
+		return ev.Trigger
+	}
+	var names []string
+	for _, m := range trackedMetrics {
+		if _, ok := ev.ZScores[m]; ok {
+			names = append(names, m)
+		}
+	}
+	if len(names) == 0 {
+		return ev.Trigger
+	}
+	return strings.Join(names, "+")
 }
 
 // Close closes the event channel. It is safe to call on a nil Recorder and

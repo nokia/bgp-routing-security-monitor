@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
+	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr"
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
 	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
@@ -31,15 +34,22 @@ const rtrMonitorProtoVersion uint8 = 2
 // unforeseen hang. See the shutdown note in RunE.
 const rtrMonitorShutdownGrace = 70 * time.Second
 
+// rtrMonitorSaveEvery is how many sync events elapse between periodic saves of
+// the anomaly baseline snapshot. At the baseline's ~15 min/sync this is roughly
+// every 5 hours, bounding worst-case data loss on an ungraceful crash to a
+// handful of samples against a 500-sample window.
+const rtrMonitorSaveEvery = 20
+
 // newRTRMonitorCmd builds "raven rtr monitor": a standalone RTR session
 // observer that streams telemetry events to an NDJSON file. It needs no
 // config file — every setting comes from flags.
 func newRTRMonitorCmd() *cobra.Command {
 	var (
-		cache      string
-		logFile    string
-		transport  string
-		prometheus string
+		cache           string
+		logFile         string
+		transport       string
+		prometheus      string
+		anomalySnapshot string
 	)
 
 	cmd := &cobra.Command{
@@ -64,6 +74,23 @@ client; no validation or BMP ingestion happens here.`,
 
 			rec := telemetry.NewRecorder(f, 64, log)
 
+			// Anomaly detector: warm-started from a persisted baseline when one
+			// exists. A missing or unreadable baseline degrades to a cold start;
+			// it must never block monitor startup.
+			snapshotPath := expandHome(anomalySnapshot)
+			detector := telemetry.NewDetector(telemetry.DefaultAnomalyConfig())
+			if err := telemetry.EnsureAnomalySnapshotDir(snapshotPath); err != nil {
+				log.Warn("could not create anomaly snapshot directory", "path", snapshotPath, "error", err)
+			}
+			switch err := detector.Load(snapshotPath); {
+			case err == nil:
+				log.Info("loaded anomaly baseline", "path", snapshotPath)
+			case os.IsNotExist(err):
+				log.Info(fmt.Sprintf("no anomaly baseline found at %s, starting cold", snapshotPath))
+			default:
+				log.Warn("could not load anomaly baseline, starting cold", "path", snapshotPath, "error", err)
+			}
+
 			// Minimal in-memory stores: NewClient requires them, but this
 			// command performs no validation, so they are never queried.
 			vrpStore := store.NewVRPStore()
@@ -78,12 +105,48 @@ client; no validation or BMP ingestion happens here.`,
 			}
 			client.SetTelemetry(rec)
 
-			// Drain the telemetry event channel: no anomaly detector consumes
-			// it in this command, so without a reader the buffer would fill and
-			// Record would drop events (logging a warning each time). This
-			// goroutine exits when rec.Close() closes the channel at shutdown.
+			// Consume the telemetry event channel: feed sync/structural events to
+			// the detector, emit any resulting anomaly as an NDJSON record on the
+			// same sink, and update Prometheus counters. A local counter drives
+			// periodic baseline saves. This goroutine exits when rec.Close()
+			// closes the channel at shutdown; consumerDone signals that exit so
+			// the final save does not race an in-flight ObserveSync.
+			consumerDone := make(chan struct{})
 			go func() {
-				for range rec.Events() {
+				defer close(consumerDone)
+
+				syncsSinceSave := 0
+				for ev := range rec.Events() {
+					var anomaly *telemetry.AnomalyEvent
+					switch ev.EventType {
+					case telemetry.EventSync:
+						anomaly = detector.ObserveSync(ev.Cache, ev.Timestamp, map[string]float64{
+							telemetry.MetricIntervalSince: float64(ev.IntervalSince),
+							telemetry.MetricSyncDuration:  float64(ev.SyncDuration),
+							telemetry.MetricVRPAnnounced:  float64(ev.VRPAnnounced),
+							telemetry.MetricVRPWithdrawn:  float64(ev.VRPWithdrawn),
+							telemetry.MetricASPAAnnounced: float64(ev.ASPAAnnounced),
+							telemetry.MetricASPAWithdrawn: float64(ev.ASPAWithdrawn),
+						})
+
+						syncsSinceSave++
+						if syncsSinceSave >= rtrMonitorSaveEvery {
+							syncsSinceSave = 0
+							if err := detector.Save(snapshotPath); err != nil {
+								log.Warn("periodic anomaly baseline save failed", "path", snapshotPath, "error", err)
+							}
+						}
+					case telemetry.EventReset:
+						anomaly = detector.ObserveStructural(ev.Cache, "cache_reset", ev.Timestamp)
+					case telemetry.EventError:
+						anomaly = detector.ObserveStructural(ev.Cache, "error_report", ev.Timestamp)
+					}
+
+					if anomaly != nil {
+						rec.RecordAnomaly(anomaly)
+						metrics.RTRAnomalyTotal.WithLabelValues(anomaly.Cache, anomaly.Severity).Inc()
+						metrics.RTRAnomalyLastTimestamp.WithLabelValues(anomaly.Cache).Set(float64(anomaly.Timestamp.Unix()))
+					}
 				}
 			}()
 
@@ -118,6 +181,16 @@ client; no validation or BMP ingestion happens here.`,
 			}
 
 			rec.Close()
+
+			// The consumer goroutine drains any buffered events and exits once
+			// the channel is closed. Wait for it before the final save so the
+			// snapshot reflects every observed sync and no ObserveSync is in
+			// flight concurrently.
+			<-consumerDone
+			if err := detector.Save(snapshotPath); err != nil {
+				log.Warn("final anomaly baseline save failed", "path", snapshotPath, "error", err)
+			}
+
 			if err := f.Close(); err != nil {
 				return fmt.Errorf("close log file: %w", err)
 			}
@@ -129,8 +202,24 @@ client; no validation or BMP ingestion happens here.`,
 	cmd.Flags().StringVar(&logFile, "log-file", "rtr-telemetry.ndjson", "path to NDJSON telemetry output file")
 	cmd.Flags().StringVar(&transport, "transport", "tcp", "RTR transport: tcp or tls")
 	cmd.Flags().StringVar(&prometheus, "prometheus", "", "Prometheus listen address (e.g. :9595); empty disables metrics")
+	cmd.Flags().StringVar(&anomalySnapshot, "anomaly-snapshot", "~/.raven/anomaly-baseline.json", "path to the adaptive anomaly-detector baseline snapshot (JSON)")
 
 	return cmd
+}
+
+// expandHome expands a leading "~/" in path using the current user's home
+// directory, mirroring the helper in internal/snapshot so path flags behave
+// consistently across the project. On any lookup error the path is returned
+// unchanged.
+func expandHome(path string) string {
+	if !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[2:])
 }
 
 // startRTRMonitorMetrics serves Prometheus metrics on addr until ctx is

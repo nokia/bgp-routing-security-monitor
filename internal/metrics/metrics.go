@@ -42,6 +42,18 @@ var (
 		Help: "Unix timestamp of last successful RTR sync.",
 	}, []string{"cache"})
 
+	// RTR anomalies detected by the adaptive detector. Labels: cache, severity.
+	RTRAnomalyTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "raven_rtr_anomaly_total",
+		Help: "Total RTR anomalies detected, by severity.",
+	}, []string{"cache", "severity"})
+
+	// Unix timestamp of the most recent RTR anomaly detected. Label: cache.
+	RTRAnomalyLastTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "raven_rtr_anomaly_last_timestamp",
+		Help: "Unix timestamp of the most recent RTR anomaly detected.",
+	}, []string{"cache"})
+
 	// Route counts by security posture and AFI. Labels: posture, afi.
 	RoutesTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "raven_routes_total",

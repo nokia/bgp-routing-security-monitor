@@ -8,8 +8,9 @@ import (
 )
 
 // seedFixture is a small synthetic NDJSON telemetry stream: a connected record,
-// five sync records, a reset and an error record (both structural), and a blank
-// line. Only the five syncs should populate windows.
+// five sync records (one full, four incremental), a reset and an error record
+// (both structural), and a blank line. Only the four incremental syncs should
+// populate windows; the full sync is counted but excluded.
 const seedFixture = `{"timestamp":"2026-07-02T15:03:01Z","cache":"localhost:3323","event_type":"connected","proto_version":2}
 {"timestamp":"2026-07-02T15:03:03Z","cache":"localhost:3323","event_type":"sync","vrp_announced":969537,"aspa_announced":2238,"sync_duration_ns":2404044565,"sync_type":"full"}
 {"timestamp":"2026-07-02T15:17:10Z","cache":"localhost:3323","event_type":"sync","vrp_announced":30,"vrp_withdrawn":24,"aspa_announced":2,"sync_duration_ns":24842016770,"interval_since_ns":847035230989,"sync_type":"incremental"}
@@ -35,9 +36,13 @@ func TestSeedBaseline(t *testing.T) {
 	if summary.SyncCount != 5 {
 		t.Fatalf("SyncCount = %d, want 5", summary.SyncCount)
 	}
+	if summary.FullSyncSkip != 1 {
+		t.Fatalf("FullSyncSkip = %d, want 1", summary.FullSyncSkip)
+	}
 
-	// All six tracked metrics get a window (every sync supplies all six keys,
-	// defaulting to 0), each holding exactly the 5 seeded sync values.
+	// All six tracked metrics get a window (every incremental sync supplies all
+	// six keys, defaulting to 0), each holding exactly the 4 incremental values;
+	// the full sync is excluded.
 	if len(summary.Fills) != len(trackedMetrics) {
 		t.Fatalf("fills = %d windows, want %d", len(summary.Fills), len(trackedMetrics))
 	}
@@ -48,8 +53,8 @@ func TestSeedBaseline(t *testing.T) {
 		if fill.Metric != trackedMetrics[i] {
 			t.Fatalf("fill[%d].Metric = %q, want %q (canonical order)", i, fill.Metric, trackedMetrics[i])
 		}
-		if fill.Count != 5 || fill.Cap != DefaultAnomalyConfig().WindowSize {
-			t.Fatalf("fill[%d] (%s) = %d/%d, want 5/%d", i, fill.Metric, fill.Count, fill.Cap, DefaultAnomalyConfig().WindowSize)
+		if fill.Count != 4 || fill.Cap != DefaultAnomalyConfig().WindowSize {
+			t.Fatalf("fill[%d] (%s) = %d/%d, want 4/%d", i, fill.Metric, fill.Count, fill.Cap, DefaultAnomalyConfig().WindowSize)
 		}
 	}
 

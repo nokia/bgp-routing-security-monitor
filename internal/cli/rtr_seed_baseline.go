@@ -66,7 +66,7 @@ so anomalies are not reported during seeding.`,
 // printSeedSummary writes a human-readable summary of a seeding run.
 func printSeedSummary(w io.Writer, s *telemetry.SeedSummary, outPath string) {
 	fmt.Fprintf(w, "lines processed: %d\n", s.LinesProcessed)
-	fmt.Fprintf(w, "sync records:    %d\n", s.SyncCount)
+	fmt.Fprintf(w, "sync records:    %d (%d full syncs skipped)\n", s.SyncCount, s.FullSyncSkip)
 
 	lastCache := ""
 	for _, fill := range s.Fills {

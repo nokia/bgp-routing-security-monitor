@@ -120,6 +120,21 @@ client; no validation or BMP ingestion happens here.`,
 					var anomaly *telemetry.AnomalyEvent
 					switch ev.EventType {
 					case telemetry.EventSync:
+						// Full syncs (Reset Query table dumps) report near the
+						// entire VRP/ASPA table as "announced", which is not
+						// comparable to the incremental deltas the baseline is
+						// built from. Feeding them to the detector would both
+						// trip a false positive (the first sync after connect is
+						// always full) and poison the rolling windows. Skip
+						// statistical evaluation entirely and leave the windows
+						// untouched; the sync is still recorded to NDJSON by the
+						// recorder for operator visibility.
+						if ev.SyncType == telemetry.SyncTypeFull {
+							log.Info("full RTR resync, not evaluated by anomaly detector",
+								"cache", ev.Cache, "vrp_total", ev.VRPTotal, "aspa_total", ev.ASPATotal)
+							break
+						}
+
 						anomaly = detector.ObserveSync(ev.Cache, ev.Timestamp, map[string]float64{
 							telemetry.MetricIntervalSince: float64(ev.IntervalSince),
 							telemetry.MetricSyncDuration:  float64(ev.SyncDuration),

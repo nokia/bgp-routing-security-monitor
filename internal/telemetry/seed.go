@@ -21,7 +21,8 @@ type SeedWindowFill struct {
 // name and then canonical metric order for stable presentation.
 type SeedSummary struct {
 	LinesProcessed int
-	SyncCount      int
+	SyncCount      int // total sync records seen (includes full syncs)
+	FullSyncSkip   int // full syncs excluded from the windows (subset of SyncCount)
 	Fills          []SeedWindowFill
 }
 
@@ -29,12 +30,14 @@ type SeedSummary struct {
 // (configured with DefaultAnomalyConfig), populating the rolling windows so the
 // resulting snapshot can warm-start a live monitor.
 //
-// Only sync records feed the windows; connected/disconnected and structural
-// (reset/error) records are skipped — the input is treated as
-// ground-truth-normal, so this is purely about filling windows, not detecting.
-// Anomaly events returned by ObserveSync are discarded. Blank lines are ignored;
-// any non-blank line that fails to parse aborts with an error rather than
-// silently degrading the baseline.
+// Only incremental sync records feed the windows; connected/disconnected and
+// structural (reset/error) records are skipped, as are full syncs (Reset Query
+// table dumps) — their near-whole-table "announced" counts are not comparable
+// to the incremental deltas the baseline models and must not touch the windows.
+// The input is treated as ground-truth-normal, so this is purely about filling
+// windows, not detecting. Anomaly events returned by ObserveSync are discarded.
+// Blank lines are ignored; any non-blank line that fails to parse aborts with an
+// error rather than silently degrading the baseline.
 func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 	detector := NewDetector(DefaultAnomalyConfig())
 	summary := &SeedSummary{}
@@ -58,6 +61,14 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 			continue
 		}
 		summary.SyncCount++
+
+		// Full syncs report near the entire table as "announced"; they are not
+		// comparable to incremental deltas, so they never feed the windows.
+		// Mirrors the live monitor path (internal/cli/rtr_monitor.go).
+		if ev.SyncType == SyncTypeFull {
+			summary.FullSyncSkip++
+			continue
+		}
 
 		// Absent JSON fields unmarshal to zero, matching the live path's
 		// "default optional metrics to 0" convention.

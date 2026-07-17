@@ -2,6 +2,28 @@
 
 All notable changes to RAVEN are recorded here.
 
+## Unreleased
+
+### Added
+- RTR anomaly detection: adaptive median/MAD-based detector for RTR sync
+  telemetry (interval, duration, VRP/ASPA churn) with per-cache rolling
+  baselines, hard-trip and correlated-trip classification.
+- Restart-safe baseline persistence via `--anomaly-snapshot` on
+  `raven rtr monitor` — anomaly detector windows survive process restarts.
+- `raven rtr seed-baseline` command to seed a detector baseline from
+  historical NDJSON telemetry, avoiding the ~25-hour warm-up window on
+  every fresh deployment.
+- New Prometheus metrics: `raven_rtr_anomaly_total`,
+  `raven_rtr_anomaly_last_timestamp`.
+- `lab/04-rtr-anomaly.sh` Containerlab demo scenario for live RTR
+  anomaly detection (bulk SLURM ROA injection, serial-based confirmation).
+
+### Fixed
+- RTR anomaly detector no longer evaluates or contaminates its baseline
+  with full (non-incremental) RTR syncs, which previously produced a
+  false-positive high-severity anomaly on every `raven rtr monitor`
+  startup.
+  
 ## v0.3.3 (2026-07-02)
 
 ### Added

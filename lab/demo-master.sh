@@ -14,6 +14,7 @@
 #   demo-master.sh recommend     — run ASPA recommender (slide 10)
 #   demo-master.sh anomaly-setup — bring up RTR anomaly detection demo env
 #   demo-master.sh anomaly-clean — stop the rtr monitor (leaves infra up)
+#   demo-master.sh anomaly-down  — full anomaly-env teardown (leaves Containerlab up)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -1341,6 +1342,85 @@ anomaly-clean)
   ok "Monitor stopped. Restart with: ./demo-master.sh anomaly-setup"
   ;;
 
+# ── ANOMALY DOWN — full teardown of the RTR anomaly detection demo env ───────
+# Unlike anomaly-clean (which stops only the monitor), this brings the whole
+# anomaly environment down, in order: monitor → injected SLURM entries →
+# Routinator → shared Grafana/Prometheus/gnmic compose stack. Every step
+# tolerates an "already stopped" state, so it is safe to re-run. It deliberately
+# does NOT touch the Containerlab topology — that is expensive to redeploy and
+# is not part of this env (see the note printed at the end).
+anomaly-down)
+  header "RTR Anomaly Detection — Full Teardown"
+
+  # ── 1. Stop the raven rtr monitor (same logic as anomaly-clean) ─────────────
+  step "Stopping raven rtr monitor..."
+  if [ -f "$RTR_MONITOR_PIDFILE" ]; then
+    MON_PID=$(cat "$RTR_MONITOR_PIDFILE")
+    if kill "$MON_PID" 2>/dev/null; then
+      ok "Stopped raven rtr monitor (PID $MON_PID)"
+    else
+      warn "No live process for PID $MON_PID — clearing stale pidfile"
+    fi
+    rm -f "$RTR_MONITOR_PIDFILE"
+  elif pkill -f "raven rtr monitor" 2>/dev/null; then
+    ok "Stopped raven rtr monitor (matched by name — no pidfile found)"
+  else
+    warn "raven rtr monitor was not running"
+  fi
+
+  # ── 2. Clean any leftover injected SLURM entries ────────────────────────────
+  # Reuse 04-rtr-anomaly.sh --clean rather than duplicating the SLURM-edit logic.
+  # It must run while Routinator is still up (its preflight exits non-zero
+  # otherwise) — that is why this step precedes the Routinator stop below.
+  # Guarded so a non-zero exit (e.g. on a re-run where Routinator is already
+  # gone, or nothing was injected) can't abort the teardown under 'set -e'.
+  step "Cleaning any injected demo SLURM entries..."
+  ANOMALY_SCRIPT="$(dirname "$0")/04-rtr-anomaly.sh"
+  if [ -f "$ANOMALY_SCRIPT" ]; then
+    if bash "$ANOMALY_SCRIPT" --clean; then
+      ok "Injected SLURM entries withdrawn"
+    else
+      warn "04-rtr-anomaly.sh --clean exited non-zero (Routinator may already be"
+      warn "stopped, or nothing was injected) — continuing teardown."
+    fi
+  else
+    warn "04-rtr-anomaly.sh not found at $ANOMALY_SCRIPT — skipping SLURM cleanup"
+  fi
+
+  # ── 3. Stop Routinator ──────────────────────────────────────────────────────
+  step "Stopping Routinator..."
+  if pkill -x routinator 2>/dev/null; then
+    ok "Routinator stopped"
+  else
+    warn "Routinator was not running"
+  fi
+  rm -f /tmp/routinator.pid 2>/dev/null || true
+
+  # ── 4. Stop the shared Grafana/Prometheus/gnmic compose stack ───────────────
+  step "Stopping observability stack (docker compose down)..."
+  if [ -d "$OBSERVABILITY_DIR" ]; then
+    # 'docker compose down' is idempotent — it returns 0 even with nothing up.
+    if ( cd "$OBSERVABILITY_DIR" && docker compose down ); then
+      ok "Observability stack stopped"
+    else
+      warn "docker compose down reported an error — stack may already be down."
+    fi
+  else
+    warn "Observability dir not found at $OBSERVABILITY_DIR — skipping stack teardown"
+  fi
+
+  # ── 5. Containerlab — intentionally left running ────────────────────────────
+  echo ""
+  step "Containerlab topology — intentionally left RUNNING"
+  echo "  Leaving clab-raven-demo-* up on purpose: it is expensive to redeploy"
+  echo "  and is not part of the anomaly demo env. This is deliberate, not an"
+  echo "  oversight. To tear it down explicitly:"
+  echo "    sudo containerlab destroy -t raven-demo.clab.yaml   (or: ./demo-master.sh down)"
+
+  echo ""
+  ok "Anomaly-env teardown complete. Restart with: ./demo-master.sh anomaly-setup"
+  ;;
+
 # ── HELP ─────────────────────────────────────────────────────────────────────
 *)
   echo ""
@@ -1371,6 +1451,7 @@ anomaly-clean)
   echo "RTR anomaly detection:"
   echo "  anomaly-setup    Bring up anomaly env (Routinator + Grafana stack + rtr monitor)"
   echo "  anomaly-clean    Stop the rtr monitor (leaves Routinator + Grafana up)"
+  echo "  anomaly-down     Full anomaly-env teardown (monitor + SLURM + Routinator + stack; keeps Containerlab)"
   echo ""
   echo "Tooling:"
   echo "  whatif           Run what-if simulator"

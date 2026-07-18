@@ -12,6 +12,8 @@
 #   demo-master.sh leak-clean    — withdraw the route leak
 #   demo-master.sh whatif        — run what-if simulator (slide 9)
 #   demo-master.sh recommend     — run ASPA recommender (slide 10)
+#   demo-master.sh anomaly-setup — bring up RTR anomaly detection demo env
+#   demo-master.sh anomaly-clean — stop the rtr monitor (leaves infra up)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -32,6 +34,14 @@ RAVEN_ADDR="localhost:11020"
 EDGE_CONTAINER="clab-raven-demo-edge"
 ATTACKER_CONTAINER="clab-raven-demo-attacker"
 GRAFANA_URL="http://localhost:3000/d/raven-security-posture"
+
+# ── RTR anomaly detection demo (anomaly-setup / anomaly-clean) ────────────────
+ANOMALY_SNAPSHOT="$HOME/.raven/anomaly-baseline.json"   # seeded baseline (prereq)
+OBSERVABILITY_DIR="$HOME/sre-demo-lab/observability"     # shared Grafana/Prom/gnmic stack
+RTR_CACHE="localhost:3323"                               # Routinator RTR endpoint
+RTR_MONITOR_PIDFILE="/tmp/rtr-monitor.pid"               # so anomaly-clean can find it
+RTR_MONITOR_NDJSON="/tmp/rtr-demo.ndjson"                # monitor event log
+RTR_MONITOR_STDLOG="/tmp/rtr-monitor.log"                # monitor stdout/stderr
 
 # ── colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -1175,6 +1185,162 @@ VTYSH" > /dev/null 2>&1 || true
   ok "LACNIC demo sequence complete."
   ;;
 
+# ── ANOMALY SETUP — bring up the full RTR anomaly detection demo env ─────────
+# Starts, in order (each healthy before the next): Routinator (native, warm) →
+# shared Grafana/Prometheus/gnmic stack → raven rtr monitor (background).
+# Idempotent on Routinator/Grafana: leaves an already-warm Routinator and a
+# running observability stack in place. Only the monitor is (re)started here.
+anomaly-setup)
+  header "RTR Anomaly Detection — Demo Setup"
+
+  # ── Prerequisite: the seeded baseline snapshot ──────────────────────────────
+  # This env depends on the baseline but does NOT create it — a cold start would
+  # mean a ~25h live warm-up before the detector is useful. Fail loudly instead.
+  if [ ! -f "$ANOMALY_SNAPSHOT" ]; then
+    echo "ERROR: anomaly baseline snapshot not found at $ANOMALY_SNAPSHOT"
+    echo "       The monitor needs a seeded baseline to start warm — this script"
+    echo "       does not create one. Seed it first with:"
+    echo ""
+    echo "         $RAVEN_BIN rtr seed-baseline \\"
+    echo "             --input ~/rtr-baseline.ndjson \\"
+    echo "             --output $ANOMALY_SNAPSHOT"
+    echo ""
+    echo "       (see lab/04-rtr-anomaly.sh for the full seeding workflow)"
+    exit 1
+  fi
+  ok "Baseline snapshot present: $ANOMALY_SNAPSHOT"
+
+  # ── Refuse to stack a second monitor (would fight over :9595) ───────────────
+  if [ -f "$RTR_MONITOR_PIDFILE" ] && kill -0 "$(cat "$RTR_MONITOR_PIDFILE")" 2>/dev/null; then
+    echo "ERROR: raven rtr monitor already running (PID $(cat "$RTR_MONITOR_PIDFILE"))."
+    echo "       It holds :9595 and the RTR session. Stop it first:"
+    echo "       ./demo-master.sh anomaly-clean"
+    exit 1
+  fi
+
+  # ── 1. Routinator (native binary, --refresh 5) ──────────────────────────────
+  # Don't disturb an already-warm instance — cold validation is slow. Only start
+  # one if none is running.
+  if pgrep -x routinator >/dev/null 2>&1; then
+    ok "Routinator already running (PID $(pgrep -x routinator | tr '\n' ' ')) — leaving it as-is"
+    if ! pgrep -af routinator | grep -q -- '--refresh'; then
+      warn "Running Routinator is not on a short --refresh — SLURM churn may take"
+      warn "up to the default 600s to appear. Restart it via 04-rtr-anomaly.sh --setup"
+      warn "if you need a fast live injection."
+    fi
+  else
+    step "Starting Routinator (warm cache, ~15-20s)..."
+    routinator server --refresh 5 > /tmp/routinator.log 2>&1 &
+    echo $! > /tmp/routinator.pid
+    ok "Routinator launched (PID $(cat /tmp/routinator.pid), --refresh 5)"
+  fi
+
+  step "Waiting for Routinator to serve VRPs (:8323)..."
+  ROUTINATOR_READY=0
+  for i in $(seq 1 60); do
+    if curl -s http://localhost:8323/api/v1/status 2>/dev/null | grep -q vrps; then
+      ok "Routinator ready (${i}s)"
+      ROUTINATOR_READY=1
+      break
+    fi
+    sleep 1; echo -n "."
+  done
+  echo ""
+  if [ "$ROUTINATOR_READY" -eq 0 ]; then
+    warn "Routinator did not report VRPs within 60s — check /tmp/routinator.log"
+    warn "The monitor may connect before RPKI data is available."
+  fi
+
+  # ── 2. Shared Grafana/Prometheus/gnmic docker-compose stack ─────────────────
+  step "Starting observability stack (Grafana/Prometheus/gnmic)..."
+  if [ ! -d "$OBSERVABILITY_DIR" ]; then
+    echo "ERROR: observability stack not found at $OBSERVABILITY_DIR"
+    echo "       Expected the shared sre-demo-lab compose stack there."
+    exit 1
+  fi
+  ( cd "$OBSERVABILITY_DIR" && docker compose up -d )
+
+  step "Waiting for Grafana (localhost:3000)..."
+  GRAFANA_READY=0
+  for i in $(seq 1 60); do
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 2>/dev/null || true)
+    if [ "$CODE" = "200" ]; then
+      ok "Grafana responding 200 (${i}s)"
+      GRAFANA_READY=1
+      break
+    fi
+    sleep 2; echo -n "."
+  done
+  echo ""
+  if [ "$GRAFANA_READY" -eq 0 ]; then
+    warn "Grafana did not return 200 within ~2 minutes — check 'docker compose ps' in $OBSERVABILITY_DIR"
+  fi
+
+  # ── 3. raven rtr monitor (background, warm-started from the baseline) ────────
+  step "Starting raven rtr monitor with seeded baseline..."
+  $RAVEN_BIN rtr monitor \
+    --cache "$RTR_CACHE" \
+    --anomaly-snapshot "$ANOMALY_SNAPSHOT" \
+    --log-file "$RTR_MONITOR_NDJSON" \
+    --prometheus :9595 \
+    > "$RTR_MONITOR_STDLOG" 2>&1 &
+  MON_PID=$!
+  disown "$MON_PID"
+  echo "$MON_PID" > "$RTR_MONITOR_PIDFILE"
+
+  # Give it a moment to bind :9595 / connect to the cache, then confirm it's alive.
+  sleep 2
+  if kill -0 "$MON_PID" 2>/dev/null; then
+    ok "raven rtr monitor running (PID $MON_PID)"
+  else
+    warn "raven rtr monitor exited immediately — check $RTR_MONITOR_STDLOG"
+    rm -f "$RTR_MONITOR_PIDFILE"
+    exit 1
+  fi
+
+  # ── Ready ───────────────────────────────────────────────────────────────────
+  echo ""
+  ok "Anomaly demo environment up."
+  echo ""
+  echo "  Grafana:      http://localhost:3000"
+  echo "  Metrics:      http://localhost:9595/metrics"
+  echo "  Event log:    $RTR_MONITOR_NDJSON   (monitor PID $MON_PID)"
+  echo "  Monitor logs: $RTR_MONITOR_STDLOG"
+  echo ""
+  echo "  Watch for anomalies:"
+  echo "    tail -f $RTR_MONITOR_NDJSON | grep '\"event_type\":\"anomaly\"'"
+  echo "    (or the raven_rtr_anomaly_total counter on :9595 / in Grafana)"
+  echo ""
+  echo "  Inject churn:  ./04-rtr-anomaly.sh          (bulk-add ROAs → vrp_announced trip)"
+  echo "  Restore:       ./04-rtr-anomaly.sh --clean  (withdraw injected ROAs)"
+  echo "  Stop monitor:  ./demo-master.sh anomaly-clean"
+  ;;
+
+# ── ANOMALY CLEAN — stop just the raven rtr monitor ──────────────────────────
+# Leaves Routinator and the Grafana stack running: both are expensive to restart
+# and don't need a teardown between demo runs — only the RAVEN process does.
+anomaly-clean)
+  header "Stopping RAVEN RTR Monitor"
+
+  if [ -f "$RTR_MONITOR_PIDFILE" ]; then
+    MON_PID=$(cat "$RTR_MONITOR_PIDFILE")
+    if kill "$MON_PID" 2>/dev/null; then
+      ok "Stopped raven rtr monitor (PID $MON_PID)"
+    else
+      warn "No live process for PID $MON_PID — clearing stale pidfile"
+    fi
+    rm -f "$RTR_MONITOR_PIDFILE"
+  elif pkill -f "raven rtr monitor" 2>/dev/null; then
+    ok "Stopped raven rtr monitor (matched by name — no pidfile found)"
+  else
+    warn "raven rtr monitor was not running"
+  fi
+
+  warn "Leaving Routinator and the Grafana/Prometheus stack running"
+  warn "(expensive to restart; they don't need teardown between demo runs)."
+  ok "Monitor stopped. Restart with: ./demo-master.sh anomaly-setup"
+  ;;
+
 # ── HELP ─────────────────────────────────────────────────────────────────────
 *)
   echo ""
@@ -1201,6 +1367,10 @@ VTYSH" > /dev/null 2>&1 || true
   echo "  stealthy         Stealthy hijack — control/data-plane divergence"
   echo "  stealthy-clean   Withdraw the stealthy hijack"
   echo "  rtr-fail         Demonstrate RTR cache failure handling"
+  echo ""
+  echo "RTR anomaly detection:"
+  echo "  anomaly-setup    Bring up anomaly env (Routinator + Grafana stack + rtr monitor)"
+  echo "  anomaly-clean    Stop the rtr monitor (leaves Routinator + Grafana up)"
   echo ""
   echo "Tooling:"
   echo "  whatif           Run what-if simulator"

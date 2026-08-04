@@ -273,6 +273,7 @@ func (l *Listener) processMessage(
 		l.peers[key] = &Peer{
 			Addr:     pu.PerPeer.PeerAddr,
 			ASN:      pu.PerPeer.PeerASN,
+			LocalASN: pu.LocalASN,
 			RouterID: pu.PerPeer.PeerBGPID,
 			SysName:  sysName,
 			State:    "up",
@@ -285,6 +286,7 @@ func (l *Listener) processMessage(
 		log.Info("BMP peer up",
 			"peer", pu.PerPeer.PeerAddr,
 			"asn", pu.PerPeer.PeerASN,
+			"local_asn", pu.LocalASN,
 			"router_id", pu.PerPeer.PeerBGPID,
 		)
 
@@ -404,7 +406,18 @@ func (l *Listener) parseRoutes(rm BMPRouteMonitoring, routerAddr netip.Addr) ([]
 	// Parse the BGP UPDATE body (after the 19-byte header)
 	updateBody := bgpData[19:bgpLength]
 
-	routes, withdrawals, err := parseBGPUpdate(updateBody, rm.PerPeer, routerAddr)
+	// Look up the monitoring router's own AS on this session, learned from
+	// the Peer Up message's Sent OPEN (see ParsePeerUp). Needed for ASPA's
+	// final path[0]-vs-local-AS check.
+	key := PeerKey{RouterAddr: routerAddr, PeerAddr: rm.PerPeer.PeerAddr}
+	l.peerMu.RLock()
+	var localASN uint32
+	if p, ok := l.peers[key]; ok {
+		localASN = p.LocalASN
+	}
+	l.peerMu.RUnlock()
+
+	routes, withdrawals, err := parseBGPUpdate(updateBody, rm.PerPeer, localASN)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse BGP UPDATE: %w", err)
 	}
@@ -415,7 +428,7 @@ func (l *Listener) parseRoutes(rm BMPRouteMonitoring, routerAddr netip.Addr) ([]
 //
 // Handles both IPv4 NLRI (carried directly in the UPDATE body) and IPv6 NLRI
 // (carried inside MP_REACH_NLRI / MP_UNREACH_NLRI path attributes per RFC 4760).
-func parseBGPUpdate(data []byte, pph BMPPerPeerHeader, routerAddr netip.Addr) ([]types.Route, []types.Withdrawal, error) {
+func parseBGPUpdate(data []byte, pph BMPPerPeerHeader, localASN uint32) ([]types.Route, []types.Withdrawal, error) {
 	if len(data) < 4 {
 		return nil, nil, nil
 	}
@@ -460,14 +473,14 @@ func parseBGPUpdate(data []byte, pph BMPPerPeerHeader, routerAddr netip.Addr) ([
 	var routes []types.Route
 	v4Prefixes := parseNLRI(data[offset:], 4)
 	for _, prefix := range v4Prefixes {
-		routes = append(routes, makeRoute(prefix, attrs.nextHop, pph, attrs, ribType))
+		routes = append(routes, makeRoute(prefix, attrs.nextHop, pph, attrs, ribType, localASN))
 	}
 
 	// Parse IPv6 NLRI carried inside MP_REACH_NLRI (AFI=2, SAFI=1)
 	if len(attrs.mpReach) > 0 {
 		nh, prefixes := parseMPReachNLRI(attrs.mpReach)
 		for _, p := range prefixes {
-			routes = append(routes, makeRoute(p, nh, pph, attrs, ribType))
+			routes = append(routes, makeRoute(p, nh, pph, attrs, ribType, localASN))
 		}
 	}
 
@@ -487,11 +500,12 @@ func parseBGPUpdate(data []byte, pph BMPPerPeerHeader, routerAddr netip.Addr) ([
 }
 
 // makeRoute constructs a types.Route from a prefix, next hop, and extracted path attributes.
-func makeRoute(prefix netip.Prefix, nextHop netip.Addr, pph BMPPerPeerHeader, attrs pathAttrs, ribType types.RIBType) types.Route {
+func makeRoute(prefix netip.Prefix, nextHop netip.Addr, pph BMPPerPeerHeader, attrs pathAttrs, ribType types.RIBType, localASN uint32) types.Route {
 	return types.Route{
 		Timestamp:        pph.Timestamp,
 		PeerAddr:         pph.PeerAddr,
 		PeerASN:          pph.PeerASN,
+		LocalASN:         localASN,
 		RouterID:         pph.PeerBGPID,
 		Prefix:           prefix,
 		ASPath:           attrs.asPath,

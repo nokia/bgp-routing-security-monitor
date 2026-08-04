@@ -90,8 +90,11 @@ type BMPPeerUp struct {
 	LocalAddr  netip.Addr
 	LocalPort  uint16
 	RemotePort uint16
-	// Sent and Received OPEN messages are parsed but we primarily
-	// extract capabilities from them (BGP Role, ADD-PATH, etc.)
+	// LocalASN is the monitored router's own AS on this session, taken from
+	// the Sent OPEN message's My Autonomous System field (overridden by the
+	// 4-octet AS Number capability, RFC 6793, when present). Zero if the
+	// embedded OPEN message could not be parsed.
+	LocalASN uint32
 }
 
 // BMPPeerDown represents a BMP Peer Down message (Type 2).
@@ -117,6 +120,7 @@ type BMPStatsReport struct {
 type Peer struct {
 	Addr       netip.Addr
 	ASN        uint32
+	LocalASN   uint32 // monitoring router's own AS on this session (from Peer Up's Sent OPEN); 0 if unknown
 	RouterID   netip.Addr
 	SysName    string
 	SysDescr   string

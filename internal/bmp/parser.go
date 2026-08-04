@@ -169,7 +169,94 @@ func ParsePeerUp(data []byte) (BMPPeerUp, error) {
 	pu.LocalPort = binary.BigEndian.Uint16(body[16:18])
 	pu.RemotePort = binary.BigEndian.Uint16(body[18:20])
 
+	// Sent OPEN Message: the BGP OPEN the monitored router sent to this
+	// peer. Its My Autonomous System field (or the 4-octet ASN capability,
+	// if present) is the monitoring router's own AS on this session.
+	if localASN, err := parseOpenLocalASN(body[20:]); err == nil {
+		pu.LocalASN = localASN
+	}
+	// A malformed/missing embedded OPEN is not fatal to Peer Up processing —
+	// LocalASN just stays 0 (unknown) for this session.
+
 	return pu, nil
+}
+
+// BGP message header: 16-byte marker + 2-byte length + 1-byte type.
+const bgpHeaderLen = 19
+const bgpMsgTypeOpen = 1
+
+// BGP OPEN optional parameter / capability codes (RFC 4271, RFC 5492, RFC 6793).
+const (
+	bgpOptParamCapabilities uint8 = 2
+	bgpCap4ByteASN          uint8 = 65
+)
+
+// parseOpenLocalASN extracts the local AS number from a BGP OPEN message:
+// the 2-byte "My Autonomous System" field, overridden by the 4-octet AS
+// Number capability (RFC 6793) when present — the same override routers
+// apply when AS_TRANS (23456) appears in the fixed-width field.
+func parseOpenLocalASN(data []byte) (uint32, error) {
+	if len(data) < bgpHeaderLen {
+		return 0, fmt.Errorf("OPEN message too short: %d bytes", len(data))
+	}
+	if data[18] != bgpMsgTypeOpen {
+		return 0, fmt.Errorf("expected BGP OPEN (type %d), got type %d", bgpMsgTypeOpen, data[18])
+	}
+
+	msgLen := int(binary.BigEndian.Uint16(data[16:18]))
+	if msgLen < bgpHeaderLen || msgLen > len(data) {
+		msgLen = len(data) // tolerate a truncated/misreported length
+	}
+	body := data[bgpHeaderLen:msgLen]
+
+	// Fixed OPEN fields: Version(1) + My AS(2) + Hold Time(2) + BGP ID(4) + Opt Parm Len(1)
+	if len(body) < 10 {
+		return 0, fmt.Errorf("OPEN body too short: %d bytes", len(body))
+	}
+	myASN := uint32(binary.BigEndian.Uint16(body[1:3]))
+	optParmLen := int(body[9])
+
+	optParams := body[10:]
+	if optParmLen > len(optParams) {
+		optParmLen = len(optParams)
+	}
+	optParams = optParams[:optParmLen]
+
+	// Walk optional parameters for the Capabilities parameter, then walk
+	// capabilities for the 4-octet AS Number capability.
+	off := 0
+	for off+2 <= len(optParams) {
+		paramType := optParams[off]
+		paramLen := int(optParams[off+1])
+		off += 2
+		if off+paramLen > len(optParams) {
+			break
+		}
+		paramVal := optParams[off : off+paramLen]
+		off += paramLen
+
+		if paramType != bgpOptParamCapabilities {
+			continue
+		}
+
+		capOff := 0
+		for capOff+2 <= len(paramVal) {
+			capCode := paramVal[capOff]
+			capLen := int(paramVal[capOff+1])
+			capOff += 2
+			if capOff+capLen > len(paramVal) {
+				break
+			}
+			capVal := paramVal[capOff : capOff+capLen]
+			capOff += capLen
+
+			if capCode == bgpCap4ByteASN && capLen == 4 {
+				return binary.BigEndian.Uint32(capVal), nil
+			}
+		}
+	}
+
+	return myASN, nil
 }
 
 // ParsePeerDown parses a BMP Peer Down message body.

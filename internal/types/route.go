@@ -11,9 +11,14 @@ import (
 
 type Route struct {
 	// Populated by BMP Ingest
-	Timestamp        time.Time
-	PeerAddr         netip.Addr
-	PeerASN          uint32
+	Timestamp time.Time
+	PeerAddr  netip.Addr
+	PeerASN   uint32
+	// LocalASN is the monitoring router's own AS on the BMP session this
+	// route was learned over (from the Peer Up message's Sent OPEN). Zero
+	// if unknown. Used by ASPA validation for the path[0]-vs-local-AS hop.
+	LocalASN uint32
+
 	RouterID         netip.Addr
 	Prefix           netip.Prefix
 	ASPath           []uint32    // flattened (AS_SETs expanded)

@@ -1387,14 +1387,37 @@ anomaly-down)
     warn "04-rtr-anomaly.sh not found at $ANOMALY_SCRIPT — skipping SLURM cleanup"
   fi
 
-  # ── 3. Stop Routinator ──────────────────────────────────────────────────────
-  step "Stopping Routinator..."
-  if pkill -x routinator 2>/dev/null; then
-    ok "Routinator stopped"
+  # ── 3. Stop Routinator — only if this demo segment started it ───────────────
+  # Routinator is a SHARED dependency across demo segments in a single session:
+  # the BMP/ROV 'setup' path needs it up too, and anomaly-setup itself only
+  # starts one if none is already running. So we must not kill an instance we
+  # didn't start. Ownership is tracked by /tmp/routinator.pid, which is written
+  # ONLY by the demo tooling when it launches Routinator (anomaly-setup's "else"
+  # branch, and 04-rtr-anomaly.sh --setup) — never when it finds one already up.
+  # Kill only if that pidfile points at a currently-live routinator process; a
+  # stale/dead/mismatched PID means it isn't ours, so leave Routinator running.
+  step "Stopping Routinator (only if this demo segment started it)..."
+  ROUTINATOR_PIDFILE="/tmp/routinator.pid"
+  if [ -f "$ROUTINATOR_PIDFILE" ] \
+     && ROUTINATOR_PID="$(cat "$ROUTINATOR_PIDFILE" 2>/dev/null)" \
+     && [ -n "$ROUTINATOR_PID" ] \
+     && pgrep -x routinator 2>/dev/null | grep -qx "$ROUTINATOR_PID"; then
+    if kill "$ROUTINATOR_PID" 2>/dev/null; then
+      ok "Routinator stopped (PID $ROUTINATOR_PID — started by this demo segment)"
+    else
+      warn "Could not signal Routinator PID $ROUTINATOR_PID — may have already exited"
+    fi
+    rm -f "$ROUTINATOR_PIDFILE"
+  elif pgrep -x routinator >/dev/null 2>&1; then
+    warn "Routinator was already running before this demo segment started;"
+    warn "leaving it up since it wasn't started by anomaly-setup (shared"
+    warn "dependency — other segments like 'setup' may rely on it)."
+    # Drop a stale pidfile (points at a dead/non-routinator PID) if one lingers.
+    rm -f "$ROUTINATOR_PIDFILE" 2>/dev/null || true
   else
     warn "Routinator was not running"
+    rm -f "$ROUTINATOR_PIDFILE" 2>/dev/null || true
   fi
-  rm -f /tmp/routinator.pid 2>/dev/null || true
 
   # ── 4. Stop the shared Grafana/Prometheus/gnmic compose stack ───────────────
   step "Stopping observability stack (docker compose down)..."

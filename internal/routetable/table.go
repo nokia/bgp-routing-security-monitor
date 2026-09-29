@@ -21,17 +21,36 @@ type Table struct {
 	// Primary store: sharded flat map keyed by (PeerAddr, Prefix)
 	shards []shard
 
-	// Prefix index: BART trie mapping prefix -> set of route keys
+	// Prefix index: BART trie mapping prefix -> route keys. A prefix's list
+	// holds at most one key per peer carrying it, so it stays short and a
+	// linear scan is cheap; a map per prefix would roughly triple the index's
+	// memory when most prefixes have a single route.
 	prefixMu  sync.RWMutex
 	prefixIdx bart.Table[[]types.RouteKey]
 
 	// Secondary index: origin ASN -> route keys
 	asnMu  sync.RWMutex
-	asnIdx map[uint32][]types.RouteKey
+	asnIdx map[uint32]keySet
 
 	// Secondary index: security posture -> route keys
 	postureMu  sync.RWMutex
-	postureIdx map[types.SecurityPosture][]types.RouteKey
+	postureIdx map[types.SecurityPosture]keySet
+}
+
+// keySet is the set of route keys under one ASN or posture index entry.
+// These entries used to be slices, scanned linearly on every insert and
+// removal; with about a million keys under a single posture that made index
+// maintenance quadratic.
+type keySet map[types.RouteKey]struct{}
+
+// keys copies the set's members. Callers hold the index's lock: a map must
+// not be read while another goroutine writes it.
+func (s keySet) keys() []types.RouteKey {
+	out := make([]types.RouteKey, 0, len(s))
+	for k := range s {
+		out = append(out, k)
+	}
+	return out
 }
 
 type shard struct {
@@ -92,8 +111,8 @@ func (t *Table) ListRoutes(ctx context.Context, f Filter) ([]types.Route, error)
 func New() *Table {
 	t := &Table{
 		shards:     make([]shard, defaultShards),
-		asnIdx:     make(map[uint32][]types.RouteKey),
-		postureIdx: make(map[types.SecurityPosture][]types.RouteKey),
+		asnIdx:     make(map[uint32]keySet),
+		postureIdx: make(map[types.SecurityPosture]keySet),
 	}
 	for i := range t.shards {
 		t.shards[i].routes = make(map[types.RouteKey]*types.Route)
@@ -124,28 +143,68 @@ func (t *Table) Insert(route *types.Route) {
 	}
 	t.prefixMu.Unlock()
 
-	// Update ASN index
+	// Update ASN index. A re-announcement with a new origin arrives as a new
+	// route for the same key, so the old origin's entry must be dropped.
 	originASN := route.OriginASN()
-	if originASN != 0 {
-		t.asnMu.Lock()
-		if !containsKey(t.asnIdx[originASN], key) {
-			t.asnIdx[originASN] = append(t.asnIdx[originASN], key)
+	t.asnMu.Lock()
+	if old != nil {
+		if oldASN := old.OriginASN(); oldASN != 0 && oldASN != originASN {
+			t.unindexASN(oldASN, key)
 		}
-		t.asnMu.Unlock()
 	}
+	if originASN != 0 {
+		addKey(t.asnIdx, originASN, key)
+	}
+	t.asnMu.Unlock()
 
 	// Update posture index
+	t.postureMu.Lock()
+	t.unindexPostureExcept(key, route.SecurityPosture)
 	if route.SecurityPosture != "" {
-		t.postureMu.Lock()
-		// Remove from old posture if changed
-		if old != nil && old.SecurityPosture != route.SecurityPosture {
-			t.postureIdx[old.SecurityPosture] = removeKey(t.postureIdx[old.SecurityPosture], key)
-		}
-		if !containsKey(t.postureIdx[route.SecurityPosture], key) {
-			t.postureIdx[route.SecurityPosture] = append(t.postureIdx[route.SecurityPosture], key)
-		}
-		t.postureMu.Unlock()
+		addKey(t.postureIdx, route.SecurityPosture, key)
 	}
+	t.postureMu.Unlock()
+}
+
+// unindexPostureExcept removes key from every posture index entry other than
+// keep. The caller holds postureMu.
+//
+// The old posture cannot be read off the stored route: RevalidateAll changes
+// a route's posture in place and re-inserts the same pointer, so by the time
+// Insert runs the stored route already carries the new posture. Checking the
+// old route's posture left the key listed under every posture it had ever
+// had. There are only a handful of postures, so clear them all.
+func (t *Table) unindexPostureExcept(key types.RouteKey, keep types.SecurityPosture) {
+	for posture, set := range t.postureIdx {
+		if posture != keep {
+			delete(set, key)
+			if len(set) == 0 {
+				delete(t.postureIdx, posture)
+			}
+		}
+	}
+}
+
+// unindexASN removes key from asn's index entry, dropping the entry once it
+// is empty so the map does not keep one per origin ever seen. The caller
+// holds asnMu.
+func (t *Table) unindexASN(asn uint32, key types.RouteKey) {
+	if set, ok := t.asnIdx[asn]; ok {
+		delete(set, key)
+		if len(set) == 0 {
+			delete(t.asnIdx, asn)
+		}
+	}
+}
+
+// addKey adds key to idx[k], creating the entry if needed.
+func addKey[K comparable](idx map[K]keySet, k K, key types.RouteKey) {
+	set, ok := idx[k]
+	if !ok {
+		set = keySet{}
+		idx[k] = set
+	}
+	set[key] = struct{}{}
 }
 
 // Withdraw removes a route from the table.
@@ -182,16 +241,15 @@ func (t *Table) withdrawOne(key types.RouteKey) {
 	originASN := route.OriginASN()
 	if originASN != 0 {
 		t.asnMu.Lock()
-		t.asnIdx[originASN] = removeKey(t.asnIdx[originASN], key)
+		t.unindexASN(originASN, key)
 		t.asnMu.Unlock()
 	}
 
-	// Clean up posture index
-	if route.SecurityPosture != "" {
-		t.postureMu.Lock()
-		t.postureIdx[route.SecurityPosture] = removeKey(t.postureIdx[route.SecurityPosture], key)
-		t.postureMu.Unlock()
-	}
+	// Clean up posture index. Every entry, not just route.SecurityPosture's:
+	// a revalidation may have changed the posture in place before this ran.
+	t.postureMu.Lock()
+	t.unindexPostureExcept(key, "")
+	t.postureMu.Unlock()
 }
 
 // WithdrawAllFromPeer removes all routes from a specific peer.
@@ -236,14 +294,14 @@ func (t *Table) GetByPrefix(prefix netip.Prefix) []*types.Route {
 
 func (t *Table) GetByOriginASN(asn uint32) []*types.Route {
 	t.asnMu.RLock()
-	keys := t.asnIdx[asn]
+	keys := t.asnIdx[asn].keys()
 	t.asnMu.RUnlock()
 	return t.resolveKeys(keys)
 }
 
 func (t *Table) GetByPosture(posture types.SecurityPosture) []*types.Route {
 	t.postureMu.RLock()
-	keys := t.postureIdx[posture]
+	keys := t.postureIdx[posture].keys()
 	t.postureMu.RUnlock()
 	return t.resolveKeys(keys)
 }
@@ -350,8 +408,8 @@ func (t *Table) CountByPosture() map[types.SecurityPosture]uint64 {
 	defer t.postureMu.RUnlock()
 
 	result := make(map[types.SecurityPosture]uint64)
-	for posture, keys := range t.postureIdx {
-		result[posture] = uint64(len(keys))
+	for posture, set := range t.postureIdx {
+		result[posture] = uint64(len(set))
 	}
 	return result
 }
@@ -383,6 +441,9 @@ func (t *Table) resolveKeys(keys []types.RouteKey) []*types.Route {
 	return routes
 }
 
+// containsKey and removeKey maintain a prefix's key list. It holds at most
+// one key per peer, so a linear scan is bounded by the peer count, not the
+// table size.
 func containsKey(keys []types.RouteKey, key types.RouteKey) bool {
 	for _, k := range keys {
 		if k == key {

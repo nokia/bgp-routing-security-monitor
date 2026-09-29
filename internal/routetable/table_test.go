@@ -190,14 +190,14 @@ func TestWithdrawAllFromPeerCleansAllIndexes(t *testing.T) {
 
 	// Origin-ASN and posture indexes hold no key for the downed peer.
 	for asn, keys := range tbl.asnIdx {
-		for _, k := range keys {
+		for k := range keys {
 			if k.PeerAddr == down {
 				t.Errorf("ASN index AS%d still holds %v", asn, k)
 			}
 		}
 	}
 	for posture, keys := range tbl.postureIdx {
-		for _, k := range keys {
+		for k := range keys {
 			if k.PeerAddr == down {
 				t.Errorf("posture index %q still holds %v", posture, k)
 			}
@@ -208,6 +208,87 @@ func TestWithdrawAllFromPeerCleansAllIndexes(t *testing.T) {
 	}
 	if got := tbl.CountByPosture()[types.PostureOriginOnly]; got != 0 {
 		t.Errorf("origin-only count after peer down = %d, want 0", got)
+	}
+}
+
+// postureListings returns every posture whose index entry lists key.
+func postureListings(tbl *Table, key types.RouteKey) []types.SecurityPosture {
+	var out []types.SecurityPosture
+	for posture, set := range tbl.postureIdx {
+		if _, ok := set[key]; ok {
+			out = append(out, posture)
+		}
+	}
+	return out
+}
+
+// asnListings returns every origin ASN whose index entry lists key.
+func asnListings(tbl *Table, key types.RouteKey) []uint32 {
+	var out []uint32
+	for asn, set := range tbl.asnIdx {
+		if _, ok := set[key]; ok {
+			out = append(out, asn)
+		}
+	}
+	return out
+}
+
+// The RevalidateAll pattern: the stored route's posture is changed in place
+// and the same pointer re-inserted, so Insert cannot read the old posture off
+// the old route. The key must still end up listed under the new posture only.
+func TestInsertPostureChangedInPlaceLeavesNoStaleKey(t *testing.T) {
+	tbl := New()
+	r := makeRoute("192.0.2.1", "1.0.0.0/24", []uint32{64501, 13335})
+	r.SecurityPosture = types.PostureSecured
+	tbl.Insert(r)
+	key := types.RouteKey{PeerAddr: r.PeerAddr, Prefix: r.Prefix, RIBType: r.RIBType}
+
+	flips := []types.SecurityPosture{
+		types.PosturePathSuspect, types.PostureSecured,
+		types.PosturePathSuspect, types.PostureSecured, types.PosturePathSuspect,
+	}
+	for i, p := range flips {
+		r.SecurityPosture = p // in place, as RevalidateAll does
+		tbl.Insert(r)
+		if got := postureListings(tbl, key); len(got) != 1 || got[0] != p {
+			t.Fatalf("after flip %d to %s: key listed under %v, want only [%s]", i+1, p, got, p)
+		}
+	}
+
+	tbl.Withdraw(r.PeerAddr, r.Prefix)
+	if got := postureListings(tbl, key); len(got) != 0 {
+		t.Errorf("after withdrawal: key still listed under %v, want nowhere", got)
+	}
+	for posture, n := range tbl.CountByPosture() {
+		if n != 0 {
+			t.Errorf("after withdrawal: CountByPosture()[%s] = %d, want 0", posture, n)
+		}
+	}
+}
+
+// A re-announcement with a different origin arrives as a new route for the
+// same key. The key must move to the new origin's ASN index entry, not be
+// listed under both.
+func TestInsertOriginChangeLeavesNoStaleASNKey(t *testing.T) {
+	tbl := New()
+	tbl.Insert(makeRoute("192.0.2.1", "1.0.0.0/24", []uint32{64501, 13335}))
+	tbl.Insert(makeRoute("192.0.2.1", "1.0.0.0/24", []uint32{64501, 64666})) // new origin
+	key := types.RouteKey{
+		PeerAddr: netip.MustParseAddr("192.0.2.1"),
+		Prefix:   netip.MustParsePrefix("1.0.0.0/24"),
+		RIBType:  types.AdjRIBInPre,
+	}
+
+	if got := asnListings(tbl, key); len(got) != 1 || got[0] != 64666 {
+		t.Fatalf("key listed under ASNs %v, want only [64666]", got)
+	}
+	for _, r := range tbl.GetByOriginASN(13335) {
+		t.Errorf("GetByOriginASN(13335) returned %s with origin AS%d", r.Prefix, r.OriginASN())
+	}
+
+	tbl.Withdraw(key.PeerAddr, key.Prefix)
+	if got := asnListings(tbl, key); len(got) != 0 {
+		t.Errorf("after withdrawal: key still listed under ASNs %v, want none", got)
 	}
 }
 

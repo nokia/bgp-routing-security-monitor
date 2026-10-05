@@ -85,6 +85,24 @@ events:
           max_attempts: 2
           timeout: 3s
 
+    # A router that sends several RIBs (pre-policy, post-policy, loc-rib)
+    # fires a rule once per RIB. A compound trigger with a rib trigger keeps
+    # the rule to some RIBs.
+    #
+    # - name: "alert-origin-invalid-loc-rib"
+    #   trigger:
+    #     type: compound
+    #     operator: and
+    #     triggers:
+    #       - type: posture
+    #         postures: ["origin-invalid"]
+    #       - type: rib
+    #         ribs: ["loc-rib"]
+    #   cooldown: 60s
+    #   actions:
+    #     - type: log
+    #       level: warn
+
     # Global visibility correlation. Requires external.ripestat.enabled: true
     # above; RAVEN refuses to start otherwise rather than silently doing
     # nothing.

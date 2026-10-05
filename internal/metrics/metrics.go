@@ -18,11 +18,11 @@ var (
 		Help: "Total BMP messages processed.",
 	}, []string{"router", "msg_type"})
 
-	// BGP peer state via BMP: 1=established 0=down. Labels: router, peer.
+	// BGP peer state via BMP (1=established, 0=down), by router, peer and distinguisher (empty for a global peer).
 	BMPPeerState = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "raven_bmp_peer_state",
 		Help: "BGP peer state as seen via BMP (1=established, 0=down).",
-	}, []string{"router", "peer"})
+	}, []string{"router", "peer", "distinguisher"})
 
 	// RTR session state: 1=connected 0=down. Label: cache.
 	RTRSessionState = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -60,17 +60,17 @@ var (
 		Help: "Unix timestamp of the most recent RTR anomaly detected.",
 	}, []string{"cache"})
 
-	// Route counts by security posture and AFI. Labels: posture, afi.
+	// Route counts by security posture, AFI and RIB.
 	RoutesTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "raven_routes_total",
-		Help: "Number of routes by security posture and address family.",
-	}, []string{"posture", "afi"})
+		Help: "Number of routes by security posture, address family and RIB.",
+	}, []string{"posture", "afi", "rib"})
 
-	// Total pre-policy routes in the route table.
-	RouteTableSize = promauto.NewGauge(prometheus.GaugeOpts{
+	// Routes in the route table, by RIB.
+	RouteTableSize = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "raven_route_table_size",
-		Help: "Total number of pre-policy routes in the route table.",
-	})
+		Help: "Number of routes in the route table, by RIB.",
+	}, []string{"rib"})
 
 	// External global-visibility correlations. Labels: source (e.g.
 	// "ripestat"), result (match, divergent, local_only, inconclusive).

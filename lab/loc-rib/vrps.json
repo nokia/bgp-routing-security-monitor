@@ -1,0 +1,8 @@
+{
+  "metadata": {"counts": 3, "generated": 1780000000, "valid": 1780000000},
+  "roas": [
+    {"prefix": "203.0.113.0/24", "maxLength": 24, "asn": "AS64510", "ta": "lab"},
+    {"prefix": "198.51.100.0/24", "maxLength": 24, "asn": "AS64999", "ta": "lab"},
+    {"prefix": "10.99.0.0/24", "maxLength": 24, "asn": "AS64510", "ta": "lab"}
+  ]
+}

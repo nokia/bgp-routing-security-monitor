@@ -89,6 +89,8 @@ type TriggerConfig struct {
 	// ASNMatch controls how the asn trigger matches: "origin" (default) checks
 	// only the last ASN in the AS path; "path" matches any ASN in the full path.
 	ASNMatch string `mapstructure:"asn_match"`
+	// RIBs is used by the rib trigger: "pre-policy", "post-policy" or "loc-rib".
+	RIBs []string `mapstructure:"ribs"`
 	// Operator is used by compound triggers: "and" or "or".
 	Operator string `mapstructure:"operator"`
 	// Triggers holds sub-triggers for compound triggers.

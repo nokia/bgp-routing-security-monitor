@@ -477,8 +477,7 @@ func (s *Server) ingestRoute(r types.Route, count uint64) {
 	// incoming live BMP message as a fresh insert → EventTypeNewRoute.
 	var oldPosture types.SecurityPosture
 	if s.eventEngine != nil {
-		key := types.RouteKey{PeerAddr: r.PeerAddr, Prefix: r.Prefix, RIBType: r.RIBType}
-		if old := s.table.Get(key); old != nil && !old.Stale {
+		if old := s.table.Get(r.Key()); old != nil && !old.Stale {
 			oldPosture = old.SecurityPosture
 		}
 	}
@@ -529,17 +528,20 @@ func (s *Server) ingestRoute(r types.Route, count uint64) {
 // that went down, from the Route Table.
 func (s *Server) ingestWithdrawal(w types.Withdrawal) {
 	if w.WithdrawAll {
-		removed := s.table.WithdrawAllFromPeer(w.PeerAddr)
-		s.log.Info("withdrew all routes from BMP peer", "peer", w.PeerAddr.String(), "routes", removed)
+		removed := s.table.WithdrawAllFromPeer(w.PeerAddr, w.PeerDistinguisher, w.RIBs...)
+		s.log.Info("withdrew all routes from BMP peer",
+			"peer", w.PeerAddr.String(),
+			"distinguisher", w.PeerDistinguisher.String(),
+			"routes", removed,
+		)
 		return
 	}
 	// Capture route before removal so the event carries prefix/posture context.
 	var withdrawn *types.Route
 	if s.eventEngine != nil {
-		key := types.RouteKey{PeerAddr: w.PeerAddr, Prefix: w.Prefix, RIBType: types.AdjRIBInPre}
-		withdrawn = s.table.Get(key)
+		withdrawn = s.table.Get(w.Key())
 	}
-	s.table.Withdraw(w.PeerAddr, w.Prefix)
+	s.table.Withdraw(w.Key())
 	if s.eventEngine != nil && withdrawn != nil {
 		s.eventEngine.Emit(events.Event{
 			ID:         events.NewID(),
@@ -554,41 +556,28 @@ func (s *Server) ingestWithdrawal(w types.Withdrawal) {
 
 // updateRouteMetrics refreshes Prometheus gauges for route counts.
 func (s *Server) updateRouteMetrics() {
-	routes := s.table.AllPrePolicy()
-	metrics.RouteTableSize.Set(float64(len(routes)))
-
-	// Explicitly zero all known posture/AFI combinations before repopulating.
+	// Explicitly zero all known RIB/posture/AFI combinations before repopulating.
 	// Using Reset() removes the series entirely, which causes Grafana
 	// lastNotNull panels to show stale values. Set(0) keeps the series at 0.
-	for _, posture := range []string{
-		"secured", "origin-only", "path-suspect", "path-only",
-		"unverified", "origin-invalid",
-	} {
-		for _, afi := range []string{"ipv4", "ipv6"} {
-			metrics.RoutesTotal.WithLabelValues(posture, afi).Set(0)
+	for _, rib := range types.RIBTypes {
+		metrics.RouteTableSize.WithLabelValues(rib.String()).Set(0)
+		for _, posture := range []string{
+			"secured", "origin-only", "path-suspect", "path-only",
+			"unverified", "origin-invalid",
+		} {
+			for _, afi := range []string{"ipv4", "ipv6"} {
+				metrics.RoutesTotal.WithLabelValues(posture, afi, rib.String()).Set(0)
+			}
 		}
 	}
 
-	// Count by posture and AFI
-	counts := make(map[string]map[string]int)
-	for _, r := range routes {
-		posture := string(r.SecurityPosture)
-		if posture == "" {
-			posture = "unverified"
-		}
-		afi := "ipv4"
-		if r.Prefix.Addr().Is6() {
-			afi = "ipv6"
-		}
-		if counts[posture] == nil {
-			counts[posture] = make(map[string]int)
-		}
-		counts[posture][afi]++
+	tableSize := make(map[string]int64)
+	for _, c := range s.RouteCounts() {
+		metrics.RoutesTotal.WithLabelValues(c.Posture, c.AFI, c.RIB).Set(float64(c.Count))
+		tableSize[c.RIB] += c.Count
 	}
-	for posture, afis := range counts {
-		for afi, n := range afis {
-			metrics.RoutesTotal.WithLabelValues(posture, afi).Set(float64(n))
-		}
+	for rib, n := range tableSize {
+		metrics.RouteTableSize.WithLabelValues(rib).Set(float64(n))
 	}
 }
 

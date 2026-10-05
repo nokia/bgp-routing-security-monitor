@@ -244,6 +244,19 @@ func TestWebhookPayloadNewFields(t *testing.T) {
 	}
 }
 
+// One prefix and peer address can have an event per RIB and routing
+// instance, so the payload says which one it is about.
+func TestWebhookPayloadHasRIBAndDistinguisher(t *testing.T) {
+	event := makeWebhookEvent()
+	event.Route.RIBType = types.LocRIB
+	event.Route.PeerDistinguisher = types.PeerDistinguisherFromUint64(64500<<32 | 100)
+	a := newWebhookAction("http://unused", "", "rule", 1, time.Second, nil, slog.Default())
+	p := a.buildPayload(event)
+	if p.RIB != "loc-rib" || p.PeerDistinguisher != "64500:100" {
+		t.Errorf("payload rib %q, peer_distinguisher %q, want loc-rib and 64500:100", p.RIB, p.PeerDistinguisher)
+	}
+}
+
 func TestWebhookPayloadProtectedASNsOmittedWhenEmpty(t *testing.T) {
 	var body []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

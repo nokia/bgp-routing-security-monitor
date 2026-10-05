@@ -143,30 +143,20 @@ func (w *Writer) doWriteAtomic(name string, v any) error {
 
 func routeToRecord(r *types.Route) snapshotv1.RouteRecord {
 	return snapshotv1.RouteRecord{
-		Prefix:        prefixString(r.Prefix),
-		PeerAddr:      addrString(r.PeerAddr),
-		PeerASN:       r.PeerASN,
-		RouterID:      addrString(r.RouterID),
-		ASPath:        r.ASPath,
-		OriginASN:     r.OriginASN(),
-		NextHop:       addrString(r.NextHop),
-		TimestampUnix: r.Timestamp.UnixNano(),
-		RIBType:       ribTypeString(r.RIBType),
-		ROVState:      r.ROV.State.String(),
-		ASPAState:     r.ASPA.State.String(),
-		Posture:       string(r.SecurityPosture),
-		Stale:         r.Stale,
-	}
-}
-
-func ribTypeString(rt types.RIBType) string {
-	switch rt {
-	case types.AdjRIBInPost:
-		return "post-policy"
-	case types.LocRIB:
-		return "loc-rib"
-	default:
-		return "pre-policy"
+		Prefix:            prefixString(r.Prefix),
+		PeerAddr:          addrString(r.PeerAddr),
+		PeerDistinguisher: r.PeerDistinguisher.Uint64(),
+		PeerASN:           r.PeerASN,
+		RouterID:          addrString(r.RouterID),
+		ASPath:            r.ASPath,
+		OriginASN:         r.OriginASN(),
+		NextHop:           addrString(r.NextHop),
+		TimestampUnix:     r.Timestamp.UnixNano(),
+		RIBType:           r.RIBType.String(),
+		ROVState:          r.ROV.State.String(),
+		ASPAState:         r.ASPA.State.String(),
+		Posture:           string(r.SecurityPosture),
+		Stale:             r.Stale,
 	}
 }
 

@@ -24,7 +24,7 @@ func makeRoute(routerID, peerAddr string, peerASN uint32, prefix string, asPath 
 // ─── TestAnalyze_Empty ───
 
 func TestAnalyze_Empty(t *testing.T) {
-	report := Analyze("192.0.2.1", nil)
+	report := Analyze("192.0.2.1", types.AdjRIBInPre, nil)
 	if report.TotalRoutes != 0 {
 		t.Errorf("TotalRoutes: got %d, want 0", report.TotalRoutes)
 	}
@@ -52,7 +52,7 @@ func TestAnalyze_RouterFilter(t *testing.T) {
 		makeRoute("10.0.0.2", "192.0.2.2", 65002, "3.0.0.0/24", []uint32{65002}, types.ROVValid, types.ASPAValid),
 	}
 
-	report := Analyze("192.0.2.1", routes)
+	report := Analyze("192.0.2.1", types.AdjRIBInPre, routes)
 	if report.TotalRoutes != 2 {
 		t.Errorf("TotalRoutes: got %d, want 2", report.TotalRoutes)
 	}
@@ -68,7 +68,7 @@ func TestAnalyze_ROVCoverage(t *testing.T) {
 		makeRoute("10.0.0.1", "192.0.2.1", 65001, "4.0.0.0/24", []uint32{65001}, types.ROVNotFound, types.ASPAUnknown),
 	}
 
-	report := Analyze("192.0.2.1", routes)
+	report := Analyze("192.0.2.1", types.AdjRIBInPre, routes)
 	// 2 out of 4 have ROV state != NotFound
 	want := 0.5
 	if report.ROVCoverage != want {
@@ -86,7 +86,7 @@ func TestAnalyze_ASPACoverage(t *testing.T) {
 		makeRoute("10.0.0.1", "192.0.2.1", 65001, "4.0.0.0/24", []uint32{65001}, types.ROVValid, types.ASPAUnknown),
 	}
 
-	report := Analyze("192.0.2.1", routes)
+	report := Analyze("192.0.2.1", types.AdjRIBInPre, routes)
 	// 2 out of 4 have ASPA state != Unknown
 	want := 0.5
 	if report.ASPACoverage != want {
@@ -104,7 +104,7 @@ func TestAnalyze_PostureSummary(t *testing.T) {
 		makeRoute("10.0.0.1", "192.0.2.1", 65001, "4.0.0.0/24", []uint32{65001}, types.ROVNotFound, types.ASPAUnknown),
 	}
 
-	report := Analyze("192.0.2.1", routes)
+	report := Analyze("192.0.2.1", types.AdjRIBInPre, routes)
 
 	if got := report.PostureSummary["secured"]; got != 2 {
 		t.Errorf("secured: got %d, want 2", got)
@@ -131,7 +131,7 @@ func TestAnalyze_TopOffenders(t *testing.T) {
 		makeRoute("10.0.0.1", "192.0.2.1", 65001, "30.0.0.0/24", []uint32{65300}, types.ROVValid, types.ASPAValid),
 	}
 
-	report := Analyze("192.0.2.1", routes)
+	report := Analyze("192.0.2.1", types.AdjRIBInPre, routes)
 
 	if len(report.TopOffenders) != 2 {
 		t.Fatalf("TopOffenders: got %d entries, want 2", len(report.TopOffenders))
@@ -229,4 +229,27 @@ func TestRecommendations(t *testing.T) {
 			t.Errorf("expected persistent offender recommendation, got %v", recs)
 		}
 	})
+}
+
+// A report covers one RIB, and has one peer row per peer address and
+// distinguisher.
+func TestAnalyze_RIBAndDistinguisher(t *testing.T) {
+	pre := makeRoute("10.0.0.1", "192.0.2.1", 65001, "1.0.0.0/24", []uint32{65001}, types.ROVValid, types.ASPAValid)
+	loc := makeRoute("10.0.0.1", "192.0.2.1", 65001, "2.0.0.0/24", []uint32{65001}, types.ROVValid, types.ASPAValid)
+	loc.RIBType = types.LocRIB
+	vrf := makeRoute("10.0.0.1", "192.0.2.1", 65001, "3.0.0.0/24", []uint32{65001}, types.ROVValid, types.ASPAValid)
+	vrf.RIBType = types.LocRIB
+	vrf.PeerDistinguisher = types.PeerDistinguisherFromUint64(64500<<32 | 100)
+
+	report := Analyze("192.0.2.1", types.LocRIB, []*types.Route{pre, loc, vrf})
+	if report.RIB != "loc-rib" || report.TotalRoutes != 2 {
+		t.Errorf("report RIB %q with %d routes, want loc-rib with 2", report.RIB, report.TotalRoutes)
+	}
+	rds := map[string]int{}
+	for _, p := range report.Peers {
+		rds[p.PeerDistinguisher] = p.TotalRoutes
+	}
+	if len(rds) != 2 || rds[""] != 1 || rds["64500:100"] != 1 {
+		t.Errorf("peer rows by distinguisher = %v, want one route each for the global and the 64500:100 instance", rds)
+	}
 }

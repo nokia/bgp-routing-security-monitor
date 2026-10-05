@@ -1,0 +1,22 @@
+bmp:
+  listen: "0.0.0.0:11019"
+rtr:
+  # StayRTR speaks RTR v1, and the auto fallback from v2 does not reach it.
+  rtr-version: "1"
+  caches:
+    - address: "172.31.90.11:8282"
+      preference: 1
+      transport: tcp
+validation:
+  rov: true
+  aspa: false
+  aspa-default-procedure: upstream
+outputs:
+  prometheus:
+    listen: ":9595"
+    path: "/metrics"
+api:
+  listen: "0.0.0.0:11020"
+logging:
+  level: info
+  format: json

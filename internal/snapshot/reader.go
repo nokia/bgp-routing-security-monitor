@@ -125,23 +125,27 @@ func recordToRoute(rec snapshotv1.RouteRecord) (*types.Route, error) {
 	routerID, _ := parseAddr(rec.RouterID)
 	nextHop, _ := parseAddr(rec.NextHop)
 
-	rib := parseRIBType(rec.RIBType)
+	rib, err := types.ParseRIBType(rec.RIBType)
+	if err != nil {
+		return nil, err
+	}
 	rovState := parseROVState(rec.ROVState)
 	aspaState := parseASPAState(rec.ASPAState)
 
 	return &types.Route{
-		Prefix:          prefix,
-		PeerAddr:        peerAddr,
-		PeerASN:         rec.PeerASN,
-		RouterID:        routerID,
-		ASPath:          rec.ASPath,
-		NextHop:         nextHop,
-		Timestamp:       time.Unix(0, rec.TimestampUnix),
-		RIBType:         rib,
-		ROV:             types.ROVResult{State: rovState},
-		ASPA:            types.ASPAResult{State: aspaState},
-		SecurityPosture: types.SecurityPosture(rec.Posture),
-		Stale:           true, // always stale on restore
+		Prefix:            prefix,
+		PeerAddr:          peerAddr,
+		PeerDistinguisher: types.PeerDistinguisherFromUint64(rec.PeerDistinguisher),
+		PeerASN:           rec.PeerASN,
+		RouterID:          routerID,
+		ASPath:            rec.ASPath,
+		NextHop:           nextHop,
+		Timestamp:         time.Unix(0, rec.TimestampUnix),
+		RIBType:           rib,
+		ROV:               types.ROVResult{State: rovState},
+		ASPA:              types.ASPAResult{State: aspaState},
+		SecurityPosture:   types.SecurityPosture(rec.Posture),
+		Stale:             true, // always stale on restore
 	}, nil
 }
 
@@ -150,17 +154,6 @@ func parseAddr(s string) (netip.Addr, error) {
 		return netip.Addr{}, nil
 	}
 	return netip.ParseAddr(s)
-}
-
-func parseRIBType(s string) types.RIBType {
-	switch s {
-	case "post-policy":
-		return types.AdjRIBInPost
-	case "loc-rib":
-		return types.LocRIB
-	default:
-		return types.AdjRIBInPre
-	}
 }
 
 func parseROVState(s string) types.ROVState {

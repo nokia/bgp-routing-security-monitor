@@ -4,10 +4,9 @@ package otel
 // It is implemented by internal/server.Server and defined here so that
 // internal/otel never imports internal/server (which would be circular).
 type StateReader interface {
-	// RouteCountsByPosture returns the current route count broken down by
+	// RouteCounts returns the current route count broken down by RIB,
 	// security posture and address family.
-	// map[posture]map[afi]count — e.g. map["secured"]["ipv4"]42
-	RouteCountsByPosture() map[string]map[string]int64
+	RouteCounts() []RouteCount
 
 	// PeerRouteCounts returns per-peer route counts.
 	PeerRouteCounts() []PeerRouteCount
@@ -26,12 +25,23 @@ type StateReader interface {
 	RTRCacheCounts() []RTRCacheCount
 }
 
+// RouteCount holds the number of routes of one RIB, posture and AFI.
+type RouteCount struct {
+	RIB     string
+	Posture string
+	AFI     string
+	Count   int64
+}
+
 // PeerRouteCount holds the route count for a single BGP peer.
 type PeerRouteCount struct {
-	PeerAddr string
-	PeerASN  uint32
-	Posture  string
-	Count    int64
+	Router        string
+	PeerAddr      string
+	Distinguisher string
+	PeerType      string
+	PeerASN       uint32
+	Posture       string
+	Count         int64
 }
 
 // BMPSessionState holds the up/down state for one router's BMP session.

@@ -51,6 +51,16 @@ func (t *PrefixTrigger) Matches(event Event) bool {
 	return t.Supernet.Bits() <= p.Bits() && t.Supernet.Contains(p.Addr())
 }
 
+// RIBTrigger fires when the event's route is in one of the configured RIBs.
+type RIBTrigger struct {
+	RIBs []types.RIBType
+}
+
+// Matches returns true if the event's route is in one of the RIBs.
+func (t *RIBTrigger) Matches(event Event) bool {
+	return event.Route != nil && slices.Contains(t.RIBs, event.Route.RIBType)
+}
+
 // ASNTrigger fires when the event's route involves one of the configured ASNs.
 // Match controls the scope: "origin" (default) checks only route.OriginASN();
 // "path" checks every ASN in the full AS path.

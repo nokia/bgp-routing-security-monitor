@@ -104,6 +104,23 @@ func TestWriteReadRoutes_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteReadRoutes_KeepsRIBAndDistinguisher(t *testing.T) {
+	w, r, _ := newWriterReader(t, testVersion)
+	route := syntheticRoute(0)
+	route.RIBType = types.LocRIB
+	route.PeerDistinguisher = types.PeerDistinguisherFromUint64(64500<<32 | 100)
+	if err := w.WriteRoutes([]*types.Route{route}); err != nil {
+		t.Fatalf("WriteRoutes: %v", err)
+	}
+	got, err := r.ReadRoutes()
+	if err != nil {
+		t.Fatalf("ReadRoutes: %v", err)
+	}
+	if len(got) != 1 || got[0].Key() != route.Key() {
+		t.Fatalf("restored %+v, want the key %+v", got, route.Key())
+	}
+}
+
 func TestWriteReadRPKI_RoundTrip(t *testing.T) {
 	w, r, _ := newWriterReader(t, testVersion)
 

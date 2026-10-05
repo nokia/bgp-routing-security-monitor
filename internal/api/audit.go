@@ -6,6 +6,7 @@ import (
 
 	"github.com/nokia/bgp-routing-security-monitor/internal/audit"
 	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
 // AuditHandler serves the router security posture audit endpoint.
@@ -29,7 +30,14 @@ func (h *AuditHandler) handleAudit(w http.ResponseWriter, r *http.Request) {
 		httpError(w, fmt.Errorf("router query parameter required"), http.StatusBadRequest)
 		return
 	}
-	routes := h.table.AllPrePolicy()
-	report := audit.Analyze(routerID, routes)
+	rib := types.AdjRIBInPre
+	if s := r.URL.Query().Get("rib"); s != "" {
+		var err error
+		if rib, err = types.ParseRIBType(s); err != nil {
+			httpError(w, err, http.StatusBadRequest)
+			return
+		}
+	}
+	report := audit.Analyze(routerID, rib, h.table.All())
 	writeJSON(w, report)
 }

@@ -162,8 +162,7 @@ bash lab/demo-master.sh leak
 
 1. Check that the events block is present in `raven.yaml` — restart RAVEN if you
    edited the file after it started.
-2. The rule has a 30 s cooldown per prefix. If you run hijack twice quickly, the
-   second fire is suppressed. Wait 30 s between runs or restart RAVEN to reset cooldown state.
+2. The rule has a 30 s cooldown per route (prefix, peer, Peer Distinguisher and RIB). If you run hijack twice quickly, the second fire is suppressed. Wait 30 s between runs or restart RAVEN to reset cooldown state.
 3. Confirm the listener is running: `curl -X POST http://localhost:9999 -d '{}'`
 
 **GoBGP container not reachable**
@@ -187,6 +186,4 @@ The edge router's router-id in this lab is `172.20.20.3`.
 
 **Cooldown confusion**
 
-Both rules have `cooldown: 30s`. This means a rule fires at most once per prefix
-per 30 s window. If you clean and re-inject a scenario within 30 s, the second
-injection will not trigger the webhook. Either wait 30 s or restart RAVEN.
+Both rules have `cooldown: 30s`. This means a rule fires at most once per route (prefix, peer, Peer Distinguisher and RIB) per 30 s window. If you clean and re-inject a scenario within 30 s, the second injection will not trigger the webhook. Either wait 30 s or restart RAVEN.

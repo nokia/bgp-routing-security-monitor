@@ -20,20 +20,21 @@ var postureOrder = map[string]int{
 	"secured":        5,
 }
 
-// Analyze computes a RouterAuditReport for the given peer address from the supplied
-// route slice (typically routetable.Table.AllPrePolicy()).
+// Analyze computes a RouterAuditReport for the given peer address from the
+// routes of one RIB in the supplied route slice.
 // An empty peerAddr matches all routes. It is a pure function: no I/O,
 // no side-effects, safe to call from tests.
-func Analyze(peerAddr string, routes []*types.Route) *RouterAuditReport {
+func Analyze(peerAddr string, rib types.RIBType, routes []*types.Route) *RouterAuditReport {
 	var local []*types.Route
 	for _, r := range routes {
-		if peerAddr == "" || r.PeerAddr.String() == peerAddr {
+		if r.RIBType == rib && (peerAddr == "" || r.PeerAddr.String() == peerAddr) {
 			local = append(local, r)
 		}
 	}
 
 	report := &RouterAuditReport{
 		RouterID:       peerAddr,
+		RIB:            rib.String(),
 		GeneratedAt:    time.Now(),
 		TotalRoutes:    len(local),
 		PostureSummary: make(map[string]int),
@@ -51,7 +52,11 @@ func Analyze(peerAddr string, routes []*types.Route) *RouterAuditReport {
 		aspaCov  int
 		postures map[string]int
 	}
-	peers := make(map[string]*peerAccum)
+	type peerKey struct {
+		addr          string
+		distinguisher string
+	}
+	peers := make(map[peerKey]*peerAccum)
 
 	type offenderAccum struct {
 		count    int
@@ -77,14 +82,14 @@ func Analyze(peerAddr string, routes []*types.Route) *RouterAuditReport {
 			aspaCovered++
 		}
 
-		peerKey := r.PeerAddr.String()
-		if peers[peerKey] == nil {
-			peers[peerKey] = &peerAccum{
+		pk := peerKey{r.PeerAddr.String(), r.PeerDistinguisher.String()}
+		if peers[pk] == nil {
+			peers[pk] = &peerAccum{
 				peerASN:  r.PeerASN,
 				postures: make(map[string]int),
 			}
 		}
-		pa := peers[peerKey]
+		pa := peers[pk]
 		pa.total++
 		pa.postures[posture]++
 		if r.ROV.State != types.ROVNotFound {
@@ -120,12 +125,13 @@ func Analyze(peerAddr string, routes []*types.Route) *RouterAuditReport {
 	report.ROVCoverage = float64(rovCovered) / float64(total)
 	report.ASPACoverage = float64(aspaCovered) / float64(total)
 
-	for peerKey, pa := range peers {
+	for pk, pa := range peers {
 		pr := PeerAuditReport{
-			PeerAddr:       peerKey,
-			PeerASN:        pa.peerASN,
-			TotalRoutes:    pa.total,
-			PostureSummary: pa.postures,
+			PeerAddr:          pk.addr,
+			PeerDistinguisher: pk.distinguisher,
+			PeerASN:           pa.peerASN,
+			TotalRoutes:       pa.total,
+			PostureSummary:    pa.postures,
 		}
 		if pa.total > 0 {
 			pr.ROVCoverage = float64(pa.rovCov) / float64(pa.total)

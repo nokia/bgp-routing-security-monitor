@@ -178,7 +178,7 @@ func (e *Exporter) initInstruments() error {
 	var err error
 
 	e.routesTotal, err = e.meter.Int64ObservableGauge(MetricRoutesTotal,
-		otelmetric.WithDescription("Number of routes by security posture and address family."))
+		otelmetric.WithDescription("Number of routes by security posture, address family and RIB."))
 	if err != nil {
 		return err
 	}
@@ -238,22 +238,24 @@ func (e *Exporter) collect(_ context.Context, o otelmetric.Observer) error {
 		return nil
 	}
 
-	// raven.routes.total — labels: posture, afi
-	for posture, afis := range r.RouteCountsByPosture() {
-		for afi, count := range afis {
-			o.ObserveInt64(e.routesTotal, count,
-				otelmetric.WithAttributes(
-					attribute.String("posture", posture),
-					attribute.String("afi", afi),
-				))
-		}
+	// raven.routes.total — labels: posture, afi, rib
+	for _, c := range r.RouteCounts() {
+		o.ObserveInt64(e.routesTotal, c.Count,
+			otelmetric.WithAttributes(
+				attribute.String("posture", c.Posture),
+				attribute.String("afi", c.AFI),
+				attribute.String("rib", c.RIB),
+			))
 	}
 
-	// raven.peer.routes — labels: peer_addr, peer_asn, posture
+	// raven.peer.routes — labels: router, peer_addr, peer_distinguisher, peer_type, peer_asn, posture
 	for _, p := range r.PeerRouteCounts() {
 		o.ObserveInt64(e.peerRoutes, p.Count,
 			otelmetric.WithAttributes(
+				attribute.String("router", p.Router),
 				attribute.String("peer_addr", p.PeerAddr),
+				attribute.String("peer_distinguisher", p.Distinguisher),
+				attribute.String("peer_type", p.PeerType),
 				attribute.Int64("peer_asn", int64(p.PeerASN)),
 				attribute.String("posture", p.Posture),
 			))

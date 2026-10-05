@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/nokia/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia/bgp-routing-security-monitor/internal/events"
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
@@ -42,6 +43,11 @@ func gaugeValue(t *testing.T, name string, labels map[string]string) float64 {
 	return 0
 }
 
+// peerDown is the withdraw-all the BMP listener sends when a BGP peer goes down.
+func peerDown(peer netip.Addr) *types.Withdrawal {
+	return &types.Withdrawal{PeerAddr: peer, WithdrawAll: true, RIBs: []types.RIBType{types.AdjRIBInPre, types.AdjRIBInPost}}
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	s, err := New(&config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -71,9 +77,9 @@ func drain(t *testing.T, s *Server) {
 		Prefix:   netip.MustParsePrefix("203.0.113.0/24"),
 		RIBType:  types.AdjRIBInPre,
 	}
-	s.table.Withdraw(marker.PeerAddr, marker.Prefix)
+	s.table.Withdraw(marker.Key())
 	s.ingestCh <- types.IngestEvent{Route: marker}
-	key := types.RouteKey{PeerAddr: marker.PeerAddr, Prefix: marker.Prefix, RIBType: marker.RIBType}
+	key := marker.Key()
 	deadline := time.Now().Add(5 * time.Second)
 	for s.table.Get(key) == nil {
 		if time.Now().After(deadline) {
@@ -81,7 +87,7 @@ func drain(t *testing.T, s *Server) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	s.table.Withdraw(marker.PeerAddr, marker.Prefix)
+	s.table.Withdraw(marker.Key())
 }
 
 // End to end through the ingest loop: a peer's routes are counted in the
@@ -109,11 +115,12 @@ func TestPeerDownRemovesPeerRoutes(t *testing.T) {
 	drain(t, s)
 
 	s.updateRouteMetrics()
-	if got := gaugeValue(t, "raven_route_table_size", nil); got != n+1 {
+	prePolicy := map[string]string{"rib": "pre-policy"}
+	if got := gaugeValue(t, "raven_route_table_size", prePolicy); got != n+1 {
 		t.Fatalf("raven_route_table_size = %v before peer down, want %d", got, n+1)
 	}
-	originOnly := map[string]string{"posture": "origin-only", "afi": "ipv4"}
-	originInvalid := map[string]string{"posture": "origin-invalid", "afi": "ipv4"}
+	originOnly := map[string]string{"posture": "origin-only", "afi": "ipv4", "rib": "pre-policy"}
+	originInvalid := map[string]string{"posture": "origin-invalid", "afi": "ipv4", "rib": "pre-policy"}
 	if got := gaugeValue(t, "raven_routes_total", originOnly); got != 30 {
 		t.Fatalf("raven_routes_total{origin-only} = %v before peer down, want 30", got)
 	}
@@ -121,14 +128,14 @@ func TestPeerDownRemovesPeerRoutes(t *testing.T) {
 		t.Fatalf("raven_routes_total{origin-invalid} = %v before peer down, want 11", got)
 	}
 
-	s.ingestCh <- types.IngestEvent{Withdrawal: &types.Withdrawal{PeerAddr: down, WithdrawAll: true}}
+	s.ingestCh <- types.IngestEvent{Withdrawal: peerDown(down)}
 	drain(t, s)
 
 	if got := s.table.Count(); got != 1 {
 		t.Errorf("table count after peer down = %d, want 1 (the other peer's route)", got)
 	}
 	s.updateRouteMetrics()
-	if got := gaugeValue(t, "raven_route_table_size", nil); got != 1 {
+	if got := gaugeValue(t, "raven_route_table_size", prePolicy); got != 1 {
 		t.Errorf("raven_route_table_size = %v after peer down, want 1", got)
 	}
 	if got := gaugeValue(t, "raven_routes_total", originOnly); got != 0 {
@@ -179,7 +186,7 @@ func TestPeerDownQueuedBeforeRTRReadyIsAppliedAfterItsRoutes(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		s.ingestCh <- types.IngestEvent{Route: testRoute(peer, i, types.PostureOriginOnly)}
 	}
-	s.ingestCh <- types.IngestEvent{Withdrawal: &types.Withdrawal{PeerAddr: peer, WithdrawAll: true}}
+	s.ingestCh <- types.IngestEvent{Withdrawal: peerDown(peer)}
 
 	// Give a loop that applies withdrawals early the chance to do so, then
 	// confirm nothing at all was consumed before the first RTR sync.
@@ -193,5 +200,77 @@ func TestPeerDownQueuedBeforeRTRReadyIsAppliedAfterItsRoutes(t *testing.T) {
 
 	if got := s.table.Count(); got != 0 {
 		t.Errorf("table count = %d, want 0: the peer-down was queued after all its routes", got)
+	}
+}
+
+type matchAll struct{}
+
+func (matchAll) Matches(events.Event) bool { return true }
+
+type recordAction struct{ ch chan events.Event }
+
+func (recordAction) Name() string { return "record" }
+
+func (a recordAction) Execute(_ context.Context, ev events.Event) error {
+	a.ch <- ev
+	return nil
+}
+
+// A withdrawal must carry the withdrawn route to the event engine whatever
+// RIB the route lives in, not only for pre-policy routes.
+func TestWithdrawalEventCarriesNonPrePolicyRoute(t *testing.T) {
+	s := newTestServer(t)
+	rec := recordAction{ch: make(chan events.Event, 8)}
+	s.eventEngine = events.NewEngine([]*events.Rule{{
+		Name:    "record",
+		Trigger: matchAll{},
+		Actions: []events.Action{rec},
+	}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.eventEngine.Run(ctx, nil)
+
+	r := testRoute(netip.MustParseAddr("192.0.2.1"), 0, types.PostureOriginOnly)
+	r.RIBType = types.LocRIB
+	s.ingestRoute(*r, 1)
+	s.ingestWithdrawal(types.Withdrawal{PeerAddr: r.PeerAddr, Prefix: r.Prefix, RIBType: types.LocRIB})
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-rec.ch:
+			if ev.Type != events.EventTypeRouteWithdraw {
+				continue
+			}
+			if ev.Route == nil || ev.Route.Prefix != r.Prefix {
+				t.Fatalf("withdraw event route = %+v, want prefix %s", ev.Route, r.Prefix)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no route_withdraw event for a Loc-RIB withdrawal")
+		}
+	}
+}
+
+// Each RIB has its own route count series, so a route that a router both
+// received and selected is counted once in each.
+func TestRouteMetricsAreSplitByRIB(t *testing.T) {
+	s := newTestServer(t)
+	peer := netip.MustParseAddr("192.0.2.1")
+	pre := testRoute(peer, 0, types.PostureOriginOnly)
+	loc := testRoute(peer, 0, types.PostureOriginOnly)
+	loc.RIBType = types.LocRIB
+	s.table.Insert(pre)
+	s.table.Insert(loc)
+	s.updateRouteMetrics()
+
+	for rib, want := range map[string]float64{"pre-policy": 1, "post-policy": 0, "loc-rib": 1} {
+		if got := gaugeValue(t, "raven_route_table_size", map[string]string{"rib": rib}); got != want {
+			t.Errorf("raven_route_table_size{rib=%q} = %v, want %v", rib, got, want)
+		}
+		labels := map[string]string{"posture": "origin-only", "afi": "ipv4", "rib": rib}
+		if got := gaugeValue(t, "raven_routes_total", labels); got != want {
+			t.Errorf("raven_routes_total{origin-only,rib=%q} = %v, want %v", rib, got, want)
+		}
 	}
 }

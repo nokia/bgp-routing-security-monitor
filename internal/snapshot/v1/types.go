@@ -14,19 +14,21 @@ type RouteSnapshot struct {
 
 // RouteRecord is a single route entry in a RouteSnapshot.
 type RouteRecord struct {
-	Prefix        string   `json:"prefix"`
-	PeerAddr      string   `json:"peer_addr"`
-	PeerASN       uint32   `json:"peer_asn"`
-	RouterID      string   `json:"router_id,omitempty"`
-	ASPath        []uint32 `json:"as_path,omitempty"`
-	OriginASN     uint32   `json:"origin_asn"`
-	NextHop       string   `json:"next_hop,omitempty"`
-	TimestampUnix int64    `json:"timestamp_unix"`
-	RIBType       string   `json:"rib_type"`
-	ROVState      string   `json:"rov_state"`
-	ASPAState     string   `json:"aspa_state"`
-	Posture       string   `json:"posture"`
-	Stale         bool     `json:"stale"`
+	Prefix   string `json:"prefix"`
+	PeerAddr string `json:"peer_addr"`
+	// PeerDistinguisher is the 8-byte BMP Peer Distinguisher as a big-endian integer.
+	PeerDistinguisher uint64   `json:"peer_distinguisher,omitempty"`
+	PeerASN           uint32   `json:"peer_asn"`
+	RouterID          string   `json:"router_id,omitempty"`
+	ASPath            []uint32 `json:"as_path,omitempty"`
+	OriginASN         uint32   `json:"origin_asn"`
+	NextHop           string   `json:"next_hop,omitempty"`
+	TimestampUnix     int64    `json:"timestamp_unix"`
+	RIBType           string   `json:"rib_type"`
+	ROVState          string   `json:"rov_state"`
+	ASPAState         string   `json:"aspa_state"`
+	Posture           string   `json:"posture"`
+	Stale             bool     `json:"stale"`
 }
 
 // RPKISnapshot is the JSON envelope written to rpki.snap.

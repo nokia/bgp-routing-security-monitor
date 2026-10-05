@@ -215,7 +215,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "raven_route_table_size",
+          "expr": "raven_route_table_size{rib=\"pre-policy\"}",
           "legendFormat": "Routes",
           "refId": "A"
         }
@@ -239,7 +239,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"origin-invalid\"})",
+          "expr": "sum(raven_routes_total{posture=\"origin-invalid\", rib=\"pre-policy\"})",
           "legendFormat": "Invalid",
           "refId": "A"
         }
@@ -263,7 +263,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"path-suspect\"})",
+          "expr": "sum(raven_routes_total{posture=\"path-suspect\", rib=\"pre-policy\"})",
           "legendFormat": "Suspect",
           "refId": "A"
         }
@@ -287,7 +287,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"secured\"})",
+          "expr": "sum(raven_routes_total{posture=\"secured\", rib=\"pre-policy\"})",
           "legendFormat": "Secured",
           "refId": "A"
         }
@@ -311,7 +311,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"unverified\"})",
+          "expr": "sum(raven_routes_total{posture=\"unverified\", rib=\"pre-policy\"})",
           "legendFormat": "Unverified",
           "refId": "A"
         }
@@ -340,7 +340,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "raven_routes_total",
+          "expr": "raven_routes_total{rib=\"pre-policy\"}",
           "legendFormat": "{{posture}}",
           "refId": "A"
         }
@@ -369,31 +369,31 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"origin-invalid\"})",
+          "expr": "sum(raven_routes_total{posture=\"origin-invalid\", rib=\"pre-policy\"})",
           "legendFormat": "origin-invalid",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"path-suspect\"})",
+          "expr": "sum(raven_routes_total{posture=\"path-suspect\", rib=\"pre-policy\"})",
           "legendFormat": "path-suspect",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"secured\"})",
+          "expr": "sum(raven_routes_total{posture=\"secured\", rib=\"pre-policy\"})",
           "legendFormat": "secured",
           "refId": "C"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"unverified\"})",
+          "expr": "sum(raven_routes_total{posture=\"unverified\", rib=\"pre-policy\"})",
           "legendFormat": "unverified",
           "refId": "D"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(raven_routes_total{posture=\"origin-only\"})",
+          "expr": "sum(raven_routes_total{posture=\"origin-only\", rib=\"pre-policy\"})",
           "legendFormat": "origin-only",
           "refId": "E"
         }

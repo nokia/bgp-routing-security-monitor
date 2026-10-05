@@ -19,28 +19,32 @@ import (
 
 // RouteResponse is a single route in API output.
 type RouteResponse struct {
-	Prefix    string   `json:"prefix"`
-	PeerAddr  string   `json:"peer"`
-	PeerASN   uint32   `json:"peer_asn"`
-	OriginASN uint32   `json:"origin_asn"`
-	ASPath    []uint32 `json:"as_path"`
-	NextHop   string   `json:"next_hop"`
-	ROV       string   `json:"rov"`
-	ROVReason string   `json:"rov_reason,omitempty"`
-	ASPA      string   `json:"aspa"`
-	Posture   string   `json:"posture"`
-	Timestamp string   `json:"timestamp"`
+	Prefix            string   `json:"prefix"`
+	PeerAddr          string   `json:"peer"`
+	PeerDistinguisher string   `json:"peer_distinguisher"`
+	RIB               string   `json:"rib"`
+	PeerASN           uint32   `json:"peer_asn"`
+	OriginASN         uint32   `json:"origin_asn"`
+	ASPath            []uint32 `json:"as_path"`
+	NextHop           string   `json:"next_hop"`
+	ROV               string   `json:"rov"`
+	ROVReason         string   `json:"rov_reason,omitempty"`
+	ASPA              string   `json:"aspa"`
+	Posture           string   `json:"posture"`
+	Timestamp         string   `json:"timestamp"`
 }
 
 // PeerResponse is a BMP peer in API output.
 type PeerResponse struct {
-	Addr       string `json:"addr"`
-	ASN        uint32 `json:"asn"`
-	RouterID   string `json:"router_id"`
-	State      string `json:"state"`
-	RouteCount uint64 `json:"route_count"`
-	UpSince    string `json:"up_since"`
-	LastMsg    string `json:"last_msg"`
+	Addr          string `json:"addr"`
+	Distinguisher string `json:"distinguisher"`
+	Type          string `json:"type"`
+	ASN           uint32 `json:"asn"`
+	RouterID      string `json:"router_id"`
+	State         string `json:"state"`
+	RouteCount    uint64 `json:"route_count"`
+	UpSince       string `json:"up_since"`
+	LastMsg       string `json:"last_msg"`
 }
 
 // StatusResponse is the system health API output.
@@ -172,7 +176,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	} else if posture := q.Get("posture"); posture != "" {
 		routes = s.table.GetByPosture(types.SecurityPosture(posture))
 	} else {
-		routes = s.table.AllPrePolicy()
+		routes = s.table.AllDefaultView()
 	}
 
 	resp := make([]RouteResponse, 0, len(routes))
@@ -187,15 +191,7 @@ func (s *Server) handlePeers(w http.ResponseWriter, r *http.Request) {
 	peers := s.bmpListen.GetPeers()
 	resp := make([]PeerResponse, 0, len(peers))
 	for _, p := range peers {
-		resp = append(resp, PeerResponse{
-			Addr:       p.Addr.String(),
-			ASN:        p.ASN,
-			RouterID:   p.RouterID.String(),
-			State:      p.State,
-			RouteCount: p.RouteCount,
-			UpSince:    p.UpSince.Format(time.RFC3339),
-			LastMsg:    p.LastMsg.Format(time.RFC3339),
-		})
+		resp = append(resp, peerToResponse(p))
 	}
 	writeJSON(w, resp)
 }
@@ -223,15 +219,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	peers := s.bmpListen.GetPeers()
 	for _, p := range peers {
-		resp.BMP = append(resp.BMP, PeerResponse{
-			Addr:       p.Addr.String(),
-			ASN:        p.ASN,
-			RouterID:   p.RouterID.String(),
-			State:      p.State,
-			RouteCount: p.RouteCount,
-			UpSince:    p.UpSince.Format(time.RFC3339),
-			LastMsg:    p.LastMsg.Format(time.RFC3339),
-		})
+		resp.BMP = append(resp.BMP, peerToResponse(p))
 	}
 
 	writeJSON(w, resp)
@@ -280,18 +268,34 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func peerToResponse(p bmp.Peer) PeerResponse {
+	return PeerResponse{
+		Addr:          p.Addr.String(),
+		Distinguisher: p.Distinguisher.String(),
+		Type:          bmp.PeerTypeName(p.PeerType),
+		ASN:           p.ASN,
+		RouterID:      p.RouterID.String(),
+		State:         p.State,
+		RouteCount:    p.RouteCount,
+		UpSince:       p.UpSince.Format(time.RFC3339),
+		LastMsg:       p.LastMsg.Format(time.RFC3339),
+	}
+}
+
 func routeToResponse(r *types.Route) RouteResponse {
 	return RouteResponse{
-		Prefix:    r.Prefix.String(),
-		PeerAddr:  r.PeerAddr.String(),
-		PeerASN:   r.PeerASN,
-		OriginASN: r.OriginASN(),
-		ASPath:    r.ASPath,
-		NextHop:   r.NextHop.String(),
-		ROV:       r.ROV.State.String(),
-		ROVReason: r.ROV.Reason,
-		ASPA:      r.ASPA.State.String(),
-		Posture:   string(r.SecurityPosture),
+		Prefix:            r.Prefix.String(),
+		PeerAddr:          r.PeerAddr.String(),
+		PeerDistinguisher: r.PeerDistinguisher.String(),
+		RIB:               r.RIBType.String(),
+		PeerASN:           r.PeerASN,
+		OriginASN:         r.OriginASN(),
+		ASPath:            r.ASPath,
+		NextHop:           r.NextHop.String(),
+		ROV:               r.ROV.State.String(),
+		ROVReason:         r.ROV.Reason,
+		ASPA:              r.ASPA.State.String(),
+		Posture:           string(r.SecurityPosture),
 	}
 }
 

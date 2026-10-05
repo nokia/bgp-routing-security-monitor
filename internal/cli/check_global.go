@@ -135,7 +135,7 @@ func runCheckGlobal(cmd *cobra.Command, args []string) error {
 		best := pickBestRoute(routes)
 		report.LocalRouteCount = len(routes)
 		report.LocalPeer = best.PeerAddr
-		report.LocalPeerASN = best.PeerASN
+		report.LocalPeerASN = best.neighborASN()
 		report.LocalPosture = best.Posture
 		report.LocalROV = best.ROV
 		report.LocalASPA = best.ASPA

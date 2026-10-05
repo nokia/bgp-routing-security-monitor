@@ -14,7 +14,7 @@ import (
 // ── mock StateReader ──────────────────────────────────────────────────────────
 
 type mockReader struct {
-	routeCounts    map[string]map[string]int64
+	routeCounts    []ravenotel.RouteCount
 	peerCounts     []ravenotel.PeerRouteCount
 	bmpSessions    []ravenotel.BMPSessionState
 	bmpMessages    []ravenotel.BMPMessageCount
@@ -22,7 +22,7 @@ type mockReader struct {
 	rtrCacheCounts []ravenotel.RTRCacheCount
 }
 
-func (m *mockReader) RouteCountsByPosture() map[string]map[string]int64 {
+func (m *mockReader) RouteCounts() []ravenotel.RouteCount {
 	return m.routeCounts
 }
 func (m *mockReader) PeerRouteCounts() []ravenotel.PeerRouteCount   { return m.peerCounts }
@@ -81,8 +81,8 @@ func TestNewExporter_Disabled(t *testing.T) {
 // first collection pass.
 func TestExporter_MetricNames(t *testing.T) {
 	sr := &mockReader{
-		routeCounts: map[string]map[string]int64{
-			"secured": {"ipv4": 5},
+		routeCounts: []ravenotel.RouteCount{
+			{RIB: "pre-policy", Posture: "secured", AFI: "ipv4", Count: 5},
 		},
 		rtrCacheCounts: []ravenotel.RTRCacheCount{
 			{CacheName: "cache1", VRPCount: 100, ASPACount: 10, LastSync: 1_700_000_000},
@@ -115,16 +115,18 @@ func TestExporter_MetricNames(t *testing.T) {
 // produces one collection, and verifies attribute values on raven.routes.total.
 func TestStateReader_Interface(t *testing.T) {
 	sr := &mockReader{
-		routeCounts: map[string]map[string]int64{
-			"secured":        {"ipv4": 10, "ipv6": 3},
-			"origin-invalid": {"ipv4": 2},
+		routeCounts: []ravenotel.RouteCount{
+			{RIB: "pre-policy", Posture: "secured", AFI: "ipv4", Count: 10},
+			{RIB: "pre-policy", Posture: "secured", AFI: "ipv6", Count: 3},
+			{RIB: "loc-rib", Posture: "secured", AFI: "ipv4", Count: 4},
+			{RIB: "pre-policy", Posture: "origin-invalid", AFI: "ipv4", Count: 2},
 		},
 	}
 	exp, _ := newTestExporter(t, sr)
 	rm := collectMetrics(t, exp)
 
-	// Find raven.routes.total and build a map of {posture+afi → count}.
-	type labelKey struct{ posture, afi string }
+	// Find raven.routes.total and build a map of {rib+posture+afi → count}.
+	type labelKey struct{ rib, posture, afi string }
 	observed := make(map[labelKey]int64)
 
 	for _, sm := range rm.ScopeMetrics {
@@ -137,35 +139,69 @@ func TestStateReader_Interface(t *testing.T) {
 				t.Fatalf("raven.routes.total: unexpected data type %T", m.Data)
 			}
 			for _, dp := range gauge.DataPoints {
-				var posture, afi string
+				var rib, posture, afi string
 				for _, kv := range dp.Attributes.ToSlice() {
 					switch string(kv.Key) {
+					case "rib":
+						rib = kv.Value.AsString()
 					case "posture":
 						posture = kv.Value.AsString()
 					case "afi":
 						afi = kv.Value.AsString()
 					}
 				}
-				observed[labelKey{posture, afi}] = dp.Value
+				observed[labelKey{rib, posture, afi}] = dp.Value
 			}
 		}
 	}
 
 	cases := []struct {
+		rib     string
 		posture string
 		afi     string
 		want    int64
 	}{
-		{"secured", "ipv4", 10},
-		{"secured", "ipv6", 3},
-		{"origin-invalid", "ipv4", 2},
+		{"pre-policy", "secured", "ipv4", 10},
+		{"pre-policy", "secured", "ipv6", 3},
+		{"loc-rib", "secured", "ipv4", 4},
+		{"pre-policy", "origin-invalid", "ipv4", 2},
 	}
 	for _, tc := range cases {
-		got := observed[labelKey{tc.posture, tc.afi}]
+		got := observed[labelKey{tc.rib, tc.posture, tc.afi}]
 		if got != tc.want {
-			t.Errorf("routes.total{posture=%q,afi=%q} = %d, want %d",
-				tc.posture, tc.afi, got, tc.want)
+			t.Errorf("routes.total{rib=%q,posture=%q,afi=%q} = %d, want %d",
+				tc.rib, tc.posture, tc.afi, got, tc.want)
 		}
+	}
+}
+
+// A router's Loc-RIB and a BGP peer of another router can share a peer
+// address, so each gets its own raven.peer.routes series.
+func TestPeerRoutesKeepPeersWithTheSameAddressApart(t *testing.T) {
+	sr := &mockReader{
+		peerCounts: []ravenotel.PeerRouteCount{
+			{Router: "rr1", PeerAddr: "10.0.12.1", PeerType: "loc-rib", PeerASN: 65000, Posture: "unverified", Count: 3},
+			{Router: "rr2", PeerAddr: "10.0.12.1", PeerType: "global", PeerASN: 65000, Posture: "unverified", Count: 4},
+		},
+	}
+	exp, _ := newTestExporter(t, sr)
+	rm := collectMetrics(t, exp)
+
+	got := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != ravenotel.MetricPeerRoutes {
+				continue
+			}
+			for _, dp := range m.Data.(metricdata.Gauge[int64]).DataPoints {
+				router, _ := dp.Attributes.Value("router")
+				peerType, _ := dp.Attributes.Value("peer_type")
+				got[router.AsString()+"/"+peerType.AsString()] = dp.Value
+			}
+		}
+	}
+	if len(got) != 2 || got["rr1/loc-rib"] != 3 || got["rr2/global"] != 4 {
+		t.Errorf("raven.peer.routes = %v, want rr1/loc-rib 3 and rr2/global 4", got)
 	}
 }
 

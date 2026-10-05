@@ -440,6 +440,37 @@ func TestCooldown(t *testing.T) {
 	}
 }
 
+// Events for the same prefix and peer address in another RIB or instance
+// describe other routes, so the cooldown of one must not suppress the other.
+func TestCooldownKeyedByRIBAndDistinguisher(t *testing.T) {
+	action := &countAction{}
+	rule := &Rule{
+		Name:        "test-cooldown",
+		Trigger:     &alwaysTrigger{},
+		Actions:     []Action{action},
+		Cooldown:    time.Minute,
+		log:         slog.Default(),
+		cooldownMap: make(map[string]time.Time),
+	}
+	pre := newRoute("10.0.0.0/8")
+	loc := *pre
+	loc.RIBType = types.LocRIB
+	vrf := loc
+	vrf.PeerDistinguisher = types.PeerDistinguisherFromUint64(64500<<32 | 100)
+
+	for _, r := range []*types.Route{pre, &loc, &vrf} {
+		rule.Evaluate(context.Background(), Event{
+			ID:        NewID(),
+			Timestamp: time.Now(),
+			Type:      EventTypeNewRoute,
+			Route:     r,
+		})
+	}
+	if n := action.count(); n != 3 {
+		t.Errorf("fired %d times, want 3: one per RIB and instance", n)
+	}
+}
+
 // ─── TestEngine_Run ───
 
 func TestEngine_Run(t *testing.T) {
@@ -548,5 +579,32 @@ func TestBuildEngine(t *testing.T) {
 	}
 	if _, _, err := BuildEngine(bad, slog.Default()); err == nil {
 		t.Error("expected error for unknown trigger type, got nil")
+	}
+}
+
+// A rib trigger keeps a rule to the routes of some RIBs, so a router that
+// sends several RIBs does not fire the rule once per RIB.
+func TestRIBTrigger(t *testing.T) {
+	trigger, err := buildTrigger(config.TriggerConfig{Type: "rib", RIBs: []string{"loc-rib"}})
+	if err != nil {
+		t.Fatalf("buildTrigger: %v", err)
+	}
+	pre := newRoute("10.0.0.0/8")
+	loc := *pre
+	loc.RIBType = types.LocRIB
+	if trigger.Matches(Event{Route: pre}) {
+		t.Error("a loc-rib trigger matched a pre-policy route")
+	}
+	if !trigger.Matches(Event{Route: &loc}) {
+		t.Error("a loc-rib trigger did not match a Loc-RIB route")
+	}
+	if trigger.Matches(Event{Type: EventTypeCacheUnhealthy}) {
+		t.Error("a rib trigger matched an event without a route")
+	}
+
+	for _, ribs := range [][]string{nil, {"adj-rib-out"}} {
+		if _, err := buildTrigger(config.TriggerConfig{Type: "rib", RIBs: ribs}); err == nil {
+			t.Errorf("buildTrigger accepted a rib trigger with ribs %v", ribs)
+		}
 	}
 }

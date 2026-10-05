@@ -23,6 +23,7 @@ message RouteRecord {
   string   aspa_state    = 11;
   string   posture       = 12;
   bool     stale         = 13;
+  uint64   peer_distinguisher = 14; // BMP Peer Distinguisher as a big-endian integer, 0 for a global peer
 }
 
 // RPKISnapshot is the VRP + ASPA store snapshot.

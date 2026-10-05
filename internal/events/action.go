@@ -39,14 +39,20 @@ func (a *LogAction) Name() string { return "log" }
 
 // Execute logs the event at the configured slog level.
 func (a *LogAction) Execute(ctx context.Context, event Event) error {
-	var prefix string
-	if event.Route != nil {
-		prefix = event.Route.Prefix.String()
+	var prefix, peer, distinguisher, rib string
+	if r := event.Route; r != nil {
+		prefix = r.Prefix.String()
+		peer = r.PeerAddr.String()
+		distinguisher = r.PeerDistinguisher.String()
+		rib = r.RIBType.String()
 	}
 	args := []any{
 		"id", event.ID,
 		"type", event.Type,
 		"prefix", prefix,
+		"peer", peer,
+		"peer_distinguisher", distinguisher,
+		"rib", rib,
 		"old_posture", event.OldPosture,
 		"new_posture", event.NewPosture,
 		"cache_name", event.CacheName,
@@ -80,21 +86,23 @@ func (a *LogAction) Execute(ctx context.Context, event Event) error {
 
 // webhookPayload is the JSON body posted to the configured endpoint.
 type webhookPayload struct {
-	ID            string   `json:"id"`
-	Timestamp     string   `json:"timestamp"`
-	Type          string   `json:"type"`
-	RuleName      string   `json:"rule_name"`
-	RouterID      string   `json:"router_id"`
-	Prefix        string   `json:"prefix"`
-	PeerAddr      string   `json:"peer_addr"`
-	PeerASN       uint32   `json:"peer_asn"`
-	OriginASN     uint32   `json:"origin_asn"`
-	ProtectedASNs []uint32 `json:"protected_asns,omitempty"`
-	OldPosture    string   `json:"old_posture"`
-	NewPosture    string   `json:"new_posture"`
-	ROVState      string   `json:"rov_state"`
-	ASPAState     string   `json:"aspa_state"`
-	CacheName     string   `json:"cache_name"`
+	ID                string   `json:"id"`
+	Timestamp         string   `json:"timestamp"`
+	Type              string   `json:"type"`
+	RuleName          string   `json:"rule_name"`
+	RouterID          string   `json:"router_id"`
+	Prefix            string   `json:"prefix"`
+	PeerAddr          string   `json:"peer_addr"`
+	PeerDistinguisher string   `json:"peer_distinguisher"`
+	RIB               string   `json:"rib"`
+	PeerASN           uint32   `json:"peer_asn"`
+	OriginASN         uint32   `json:"origin_asn"`
+	ProtectedASNs     []uint32 `json:"protected_asns,omitempty"`
+	OldPosture        string   `json:"old_posture"`
+	NewPosture        string   `json:"new_posture"`
+	ROVState          string   `json:"rov_state"`
+	ASPAState         string   `json:"aspa_state"`
+	CacheName         string   `json:"cache_name"`
 	// GlobalVisibility is present only when the rule includes a
 	// global-correlate action. Existing consumers see no change.
 	GlobalVisibility *external.GlobalVisibilityResult `json:"global_visibility,omitempty"`
@@ -244,6 +252,8 @@ func (a *WebhookAction) buildPayload(event Event) webhookPayload {
 	if event.Route != nil {
 		p.Prefix = event.Route.Prefix.String()
 		p.PeerAddr = event.Route.PeerAddr.String()
+		p.PeerDistinguisher = event.Route.PeerDistinguisher.String()
+		p.RIB = event.Route.RIBType.String()
 		p.PeerASN = event.Route.PeerASN
 		p.OriginASN = event.Route.OriginASN()
 		p.ROVState = event.Route.ROV.State.String()

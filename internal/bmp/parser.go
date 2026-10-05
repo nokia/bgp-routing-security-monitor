@@ -80,6 +80,11 @@ func ParsePerPeerHeader(data []byte) (BMPPerPeerHeader, error) {
 	usec := binary.BigEndian.Uint32(data[38:42])
 	h.Timestamp = time.Unix(int64(sec), int64(usec)*1000)
 
+	// A Loc-RIB header has a zero peer address (RFC 9069 §5.1), and the BGP ID keeps the Loc-RIBs of different routers apart.
+	if h.IsLocRIB() {
+		h.PeerAddr = h.PeerBGPID
+	}
+
 	return h, nil
 }
 

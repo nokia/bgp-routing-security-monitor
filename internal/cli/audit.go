@@ -10,7 +10,7 @@ import (
 )
 
 func newAuditCmd(addr *string) *cobra.Command {
-	var router, format string
+	var router, rib, format string
 
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -18,6 +18,7 @@ func newAuditCmd(addr *string) *cobra.Command {
 		Long: `Run a read-only security posture audit for a single router.
 
   raven audit --router 10.0.0.1
+  raven audit --router 10.0.0.1 --rib loc-rib
   raven audit --router 10.0.0.1 --format json
   raven audit --router 10.0.0.1 --format markdown`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -25,7 +26,7 @@ func newAuditCmd(addr *string) *cobra.Command {
 				return fmt.Errorf("--router is required")
 			}
 
-			params := url.Values{"router": {router}}
+			params := url.Values{"router": {router}, "rib": {rib}}
 			resp, err := apiGet(*addr, "/api/v1/audit", params)
 			if err != nil {
 				return fmt.Errorf("audit: %w", err)
@@ -54,6 +55,7 @@ func newAuditCmd(addr *string) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&router, "router", "", "Router ID to audit (required)")
+	cmd.Flags().StringVar(&rib, "rib", "pre-policy", "RIB to audit: pre-policy|post-policy|loc-rib")
 	cmd.Flags().StringVar(&format, "format", "table", "Output format: table|json|markdown")
 
 	return cmd

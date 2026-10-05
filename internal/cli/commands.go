@@ -108,10 +108,12 @@ var statusCmd = &cobra.Command{
 			Version string `json:"version"`
 			Uptime  string `json:"uptime"`
 			BMP     []struct {
-				Addr       string `json:"addr"`
-				ASN        uint32 `json:"asn"`
-				State      string `json:"state"`
-				RouteCount uint64 `json:"route_count"`
+				Addr          string `json:"addr"`
+				Distinguisher string `json:"distinguisher"`
+				Type          string `json:"type"`
+				ASN           uint32 `json:"asn"`
+				State         string `json:"state"`
+				RouteCount    uint64 `json:"route_count"`
 			} `json:"bmp_peers"`
 			RTR struct {
 				VRPCount uint64 `json:"vrp_count"`
@@ -137,9 +139,10 @@ var statusCmd = &cobra.Command{
 
 		fmt.Printf("\nBMP Peers: %d\n", len(status.BMP))
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(tw, "  PEER\tASN\tSTATE\tROUTES\n")
+		fmt.Fprintf(tw, "  PEER\tRD\tTYPE\tASN\tSTATE\tROUTES\n")
 		for _, p := range status.BMP {
-			fmt.Fprintf(tw, "  %s\t%d\t%s\t%d\n", p.Addr, p.ASN, p.State, p.RouteCount)
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%d\t%s\t%d\n",
+				p.Addr, dashIfEmpty(p.Distinguisher), p.Type, p.ASN, p.State, p.RouteCount)
 		}
 		tw.Flush()
 		return nil
@@ -160,22 +163,24 @@ var peersCmd = &cobra.Command{
 		defer resp.Body.Close()
 
 		var peers []struct {
-			Addr       string `json:"addr"`
-			ASN        uint32 `json:"asn"`
-			RouterID   string `json:"router_id"`
-			State      string `json:"state"`
-			RouteCount uint64 `json:"route_count"`
-			UpSince    string `json:"up_since"`
+			Addr          string `json:"addr"`
+			Distinguisher string `json:"distinguisher"`
+			Type          string `json:"type"`
+			ASN           uint32 `json:"asn"`
+			RouterID      string `json:"router_id"`
+			State         string `json:"state"`
+			RouteCount    uint64 `json:"route_count"`
+			UpSince       string `json:"up_since"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
 			return err
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(tw, "PEER\tASN\tROUTER ID\tSTATE\tROUTES\tUP SINCE\n")
+		fmt.Fprintf(tw, "PEER\tRD\tTYPE\tASN\tROUTER ID\tSTATE\tROUTES\tUP SINCE\n")
 		for _, p := range peers {
-			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\n",
-				p.Addr, p.ASN, p.RouterID, p.State, p.RouteCount, p.UpSince)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%d\t%s\n",
+				p.Addr, dashIfEmpty(p.Distinguisher), p.Type, p.ASN, p.RouterID, p.State, p.RouteCount, p.UpSince)
 		}
 		tw.Flush()
 		return nil
@@ -217,13 +222,14 @@ var routesCmd = &cobra.Command{
 		}
 
 		var routes []struct {
-			Prefix    string   `json:"prefix"`
-			PeerAddr  string   `json:"peer"`
-			OriginASN uint32   `json:"origin_asn"`
-			ASPath    []uint32 `json:"as_path"`
-			ROV       string   `json:"rov"`
-			ASPA      string   `json:"aspa"`
-			Posture   string   `json:"posture"`
+			Prefix            string `json:"prefix"`
+			PeerAddr          string `json:"peer"`
+			PeerDistinguisher string `json:"peer_distinguisher"`
+			RIB               string `json:"rib"`
+			OriginASN         uint32 `json:"origin_asn"`
+			ROV               string `json:"rov"`
+			ASPA              string `json:"aspa"`
+			Posture           string `json:"posture"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&routes); err != nil {
 			return err
@@ -235,16 +241,14 @@ var routesCmd = &cobra.Command{
 			prefixes[i] = r.Prefix
 		}
 		pw := prefixColWidth(prefixes)
-		fmt.Fprintf(tw, "%-*s\tPEER\tORIGIN\tROV\tASPA\tPOSTURE\n", pw, "PREFIX")
+		fmt.Fprintf(tw, "%-*s\tPEER\tRD\tRIB\tORIGIN\tROV\tASPA\tPOSTURE\n", pw, "PREFIX")
 		for _, r := range routes {
-			asPathStr := formatASPath(r.ASPath)
 			origin := fmt.Sprintf("AS%d", r.OriginASN)
 			if r.OriginASN == 0 {
 				origin = "-"
 			}
-			fmt.Fprintf(tw, "%-*s\t%s\t%s\t%s\t%s\t%s\n",
-				pw, r.Prefix, r.PeerAddr, origin, r.ROV, r.ASPA, r.Posture)
-			_ = asPathStr
+			fmt.Fprintf(tw, "%-*s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				pw, r.Prefix, r.PeerAddr, dashIfEmpty(r.PeerDistinguisher), r.RIB, origin, r.ROV, r.ASPA, r.Posture)
 		}
 		tw.Flush()
 		return nil
@@ -402,15 +406,11 @@ func apiPost(addr string, path string) (*http.Response, error) {
 	return resp, nil
 }
 
-func formatASPath(path []uint32) string {
-	if len(path) == 0 {
+func dashIfEmpty(s string) string {
+	if s == "" {
 		return "-"
 	}
-	parts := make([]string, len(path))
-	for i, asn := range path {
-		parts[i] = fmt.Sprintf("%d", asn)
-	}
-	return strings.Join(parts, " ")
+	return s
 }
 
 func init() {

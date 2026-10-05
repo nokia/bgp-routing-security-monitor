@@ -54,6 +54,8 @@ message RouteEntry {
   repeated VRPEntry matched_vrps = 11;
   ASPADetail aspa_detail = 12;
   int64 timestamp_unix = 13;
+  string rib = 14;                // "pre-policy", "post-policy", "loc-rib"
+  string peer_distinguisher = 15; // route distinguisher, empty for a global peer
 }
 
 message VRPEntry {
@@ -130,6 +132,8 @@ message BMPPeerStatus {
   uint64 route_count = 5;
   int64 uptime_seconds = 6;
   int64 last_message_unix = 7;
+  string distinguisher = 8;    // route distinguisher, empty for a global peer
+  string type = 9;             // "global", "rd", "local", "loc-rib"
 }
 
 message RTRCacheStatus {
@@ -160,6 +164,7 @@ message ListPeersResponse {
 
 message AuditRouterRequest {
   string router_id = 1; // router ID (IP address) to audit
+  string rib = 2;       // "pre-policy" (default), "post-policy", "loc-rib"
 }
 
 message PeerAuditEntry {
@@ -169,6 +174,7 @@ message PeerAuditEntry {
   map<string, int32> posture_summary = 4;
   double rov_coverage = 5;
   double aspa_coverage = 6;
+  string peer_distinguisher = 7; // route distinguisher, empty for a global peer
 }
 
 message OffenderEntry {
@@ -188,4 +194,5 @@ message AuditRouterResponse {
   repeated PeerAuditEntry peers = 7;
   repeated OffenderEntry top_offenders = 8;
   repeated string recommendations = 9;
+  string rib = 10;
 }

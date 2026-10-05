@@ -1,6 +1,7 @@
 package routetable
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 
@@ -94,7 +95,7 @@ func TestWithdraw(t *testing.T) {
 		t.Fatalf("count before withdraw = %d, want 1", tbl.Count())
 	}
 
-	tbl.Withdraw(netip.MustParseAddr("192.0.2.1"), netip.MustParsePrefix("1.0.0.0/24"))
+	tbl.Withdraw(types.RouteKey{PeerAddr: netip.MustParseAddr("192.0.2.1"), Prefix: netip.MustParsePrefix("1.0.0.0/24")})
 
 	if tbl.Count() != 0 {
 		t.Fatalf("count after withdraw = %d, want 0", tbl.Count())
@@ -117,7 +118,7 @@ func TestWithdrawAllFromPeer(t *testing.T) {
 		t.Fatalf("count = %d, want 3", tbl.Count())
 	}
 
-	removed := tbl.WithdrawAllFromPeer(netip.MustParseAddr("192.0.2.1"))
+	removed := tbl.WithdrawAllFromPeer(netip.MustParseAddr("192.0.2.1"), types.PeerDistinguisher{}, types.AdjRIBInPre)
 	if removed != 2 {
 		t.Errorf("removed = %d, want 2", removed)
 	}
@@ -159,7 +160,7 @@ func TestWithdrawAllFromPeerCleansAllIndexes(t *testing.T) {
 		t.Fatalf("count before peer down = %d, want %d", got, 2*n+2)
 	}
 
-	if removed := tbl.WithdrawAllFromPeer(down); removed != 2*n {
+	if removed := tbl.WithdrawAllFromPeer(down, types.PeerDistinguisher{}, types.AdjRIBInPre, types.AdjRIBInPost); removed != 2*n {
 		t.Errorf("removed = %d, want %d", removed, 2*n)
 	}
 
@@ -230,5 +231,158 @@ func TestGetByPosture(t *testing.T) {
 	invalid := tbl.GetByPosture(types.PostureOriginInvalid)
 	if len(invalid) != 1 {
 		t.Errorf("origin-invalid routes = %d, want 1", len(invalid))
+	}
+}
+
+// The default view holds what the routers received (pre-policy Adj-RIB-In)
+// and what they selected (Loc-RIB). Post-policy routes stay stored but out
+// of the view.
+func TestDefaultViewIncludesLocRIBButNotPostPolicy(t *testing.T) {
+	tbl := New()
+	prefix := "1.0.0.0/24"
+
+	pre := makeRoute("192.0.2.1", prefix, []uint32{64501, 13335})
+	pre.SecurityPosture = types.PostureOriginOnly
+	post := makeRoute("192.0.2.1", prefix, []uint32{64501, 13335})
+	post.RIBType = types.AdjRIBInPost
+	post.SecurityPosture = types.PostureOriginOnly
+	loc := makeRoute("192.0.2.55", prefix, []uint32{64501, 13335})
+	loc.RIBType = types.LocRIB
+	loc.SecurityPosture = types.PostureOriginOnly
+	for _, r := range []*types.Route{pre, post, loc} {
+		tbl.Insert(r)
+	}
+
+	wantRIBs := func(name string, routes []*types.Route) {
+		t.Helper()
+		got := map[types.RIBType]int{}
+		for _, r := range routes {
+			got[r.RIBType]++
+		}
+		if len(routes) != 2 || got[types.AdjRIBInPre] != 1 || got[types.LocRIB] != 1 {
+			t.Errorf("%s returned RIB types %v, want one pre-policy and one Loc-RIB", name, got)
+		}
+	}
+	wantRIBs("GetByPrefix", tbl.GetByPrefix(netip.MustParsePrefix(prefix)))
+	wantRIBs("GetByOriginASN", tbl.GetByOriginASN(13335))
+	wantRIBs("GetByPosture", tbl.GetByPosture(types.PostureOriginOnly))
+	wantRIBs("AllDefaultView", tbl.AllDefaultView())
+
+	if routes := tbl.GetByPeer(netip.MustParseAddr("192.0.2.55")); len(routes) != 1 || routes[0].RIBType != types.LocRIB {
+		t.Errorf("GetByPeer on the Loc-RIB peer returned %d routes, want its Loc-RIB route", len(routes))
+	}
+}
+
+// A router's BGP ID is often the address another router peers with, so a
+// Loc-RIB and an Adj-RIB-In can share a peer address. A withdrawal must only
+// touch the RIBs it was sent for.
+func TestWithdrawIsScopedToRIBType(t *testing.T) {
+	peer := netip.MustParseAddr("192.0.2.55")
+	prefix := netip.MustParsePrefix("1.0.0.0/24")
+	newTable := func() *Table {
+		tbl := New()
+		for _, rib := range []types.RIBType{types.AdjRIBInPre, types.AdjRIBInPost, types.LocRIB} {
+			r := makeRoute(peer.String(), prefix.String(), []uint32{64501, 13335})
+			r.RIBType = rib
+			tbl.Insert(r)
+		}
+		return tbl
+	}
+	has := func(tbl *Table, rib types.RIBType) bool {
+		return tbl.Get(types.RouteKey{PeerAddr: peer, Prefix: prefix, RIBType: rib}) != nil
+	}
+
+	tbl := newTable()
+	tbl.Withdraw(types.RouteKey{PeerAddr: peer, Prefix: prefix, RIBType: types.AdjRIBInPre})
+	if has(tbl, types.AdjRIBInPre) || !has(tbl, types.AdjRIBInPost) || !has(tbl, types.LocRIB) {
+		t.Error("a pre-policy withdrawal must remove only the pre-policy route")
+	}
+
+	tbl = newTable()
+	if removed := tbl.WithdrawAllFromPeer(peer, types.PeerDistinguisher{}, types.AdjRIBInPre, types.AdjRIBInPost); removed != 2 {
+		t.Errorf("Adj-RIB-In withdraw-all removed %d routes, want 2", removed)
+	}
+	if !has(tbl, types.LocRIB) {
+		t.Error("an Adj-RIB-In withdraw-all removed the Loc-RIB route")
+	}
+
+	tbl = newTable()
+	if removed := tbl.WithdrawAllFromPeer(peer, types.PeerDistinguisher{}, types.LocRIB); removed != 1 {
+		t.Errorf("Loc-RIB withdraw-all removed %d routes, want 1", removed)
+	}
+	if !has(tbl, types.AdjRIBInPre) || !has(tbl, types.AdjRIBInPost) {
+		t.Error("a Loc-RIB withdraw-all removed an Adj-RIB-In route")
+	}
+}
+
+// VRF Loc-RIBs of one router share its BGP ID, so routes and withdrawals are
+// kept apart by the Peer Distinguisher.
+func TestRoutesAreKeyedByDistinguisher(t *testing.T) {
+	peer := netip.MustParseAddr("192.0.2.55")
+	prefix := netip.MustParsePrefix("1.0.0.0/24")
+	vrf := types.PeerDistinguisherFromUint64(64500<<32 | 100)
+	tbl := New()
+	for _, d := range []types.PeerDistinguisher{{}, vrf} {
+		r := makeRoute(peer.String(), prefix.String(), []uint32{64510})
+		r.RIBType = types.LocRIB
+		r.PeerDistinguisher = d
+		tbl.Insert(r)
+	}
+	if got := tbl.Count(); got != 2 {
+		t.Fatalf("count = %d, want one route per instance", got)
+	}
+
+	if removed := tbl.WithdrawAllFromPeer(peer, vrf, types.LocRIB); removed != 1 {
+		t.Errorf("VRF withdraw-all removed %d routes, want 1", removed)
+	}
+	if tbl.Get(types.RouteKey{PeerAddr: peer, Prefix: prefix, RIBType: types.LocRIB}) == nil {
+		t.Error("the VRF withdraw-all removed the global Loc-RIB route")
+	}
+}
+
+// The what-if simulator and the ASPA recommender count each route once, so
+// ListRoutes returns one RIB, pre-policy by default.
+func TestListRoutesReturnsOneRIB(t *testing.T) {
+	tbl := New()
+	peer := "192.0.2.1"
+	prefix := "1.0.0.0/24"
+	for _, rib := range types.RIBTypes {
+		r := makeRoute(peer, prefix, []uint32{64501, 13335})
+		r.RIBType = rib
+		r.SecurityPosture = types.PostureOriginOnly
+		tbl.Insert(r)
+	}
+
+	for name, f := range map[string]Filter{
+		"no filter": {},
+		"peer":      {PeerAddr: peer},
+		"prefix":    {Prefix: prefix},
+		"origin":    {OriginASN: 13335},
+		"posture":   {Posture: string(types.PostureOriginOnly)},
+	} {
+		for _, rib := range types.RIBTypes {
+			f.RIB = rib
+			routes, err := tbl.ListRoutes(context.Background(), f)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if len(routes) != 1 || routes[0].RIBType != rib {
+				t.Errorf("%s, RIB %s: got %d routes, want the %s route only", name, rib, len(routes), rib)
+			}
+		}
+	}
+}
+
+// A withdraw-all without RIBs must not silently keep the routes of the peer.
+func TestWithdrawAllFromPeerWithoutRIBsRemovesEveryRIB(t *testing.T) {
+	tbl := New()
+	peer := netip.MustParseAddr("192.0.2.1")
+	for _, rib := range types.RIBTypes {
+		r := makeRoute(peer.String(), "1.0.0.0/24", []uint32{64501, 13335})
+		r.RIBType = rib
+		tbl.Insert(r)
+	}
+	if removed := tbl.WithdrawAllFromPeer(peer, types.PeerDistinguisher{}); removed != len(types.RIBTypes) {
+		t.Errorf("removed %d routes, want %d", removed, len(types.RIBTypes))
 	}
 }

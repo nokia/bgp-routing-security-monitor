@@ -1,0 +1,66 @@
+# Loc-RIB (RFC 9069) lab: rr1 exports its Loc-RIB, rr2 exports the
+# pre-policy Adj-RIB-In of its session to rr1. Driven by run.sh.
+name: loc-rib
+
+mgmt:
+  network: raven-loc-rib
+  ipv4-subnet: 172.31.90.0/24
+
+topology:
+  defaults:
+    kind: linux
+
+  nodes:
+    raven:
+      image: alpine:latest
+      mgmt-ipv4: 172.31.90.10
+      binds:
+        - bin/raven:/usr/local/bin/raven:ro
+        - raven.yaml:/etc/raven/raven.yaml:ro
+      cmd: raven serve --config /etc/raven/raven.yaml
+
+    rtr:
+      image: rpki/stayrtr:latest
+      mgmt-ipv4: 172.31.90.11
+      binds:
+        - vrps.json:/vrps.json:ro
+      cmd: -cache /vrps.json -checktime=false -refresh 10
+
+    # FRR 10.2 sends no Loc-RIB Peer Up and no Loc-RIB update after a
+    # best path change; this master build (bgpd 10.8.0-dev, 2026-10-02) does.
+    rr1:
+      image: quay.io/frrouting/frr@sha256:910660af920c08b3ae90293282e029a39194fa0f43d6abe710ade3261307d43e
+      mgmt-ipv4: 172.31.90.21
+      binds:
+        - configs/daemons:/etc/frr/daemons
+        - configs/vtysh.conf:/etc/frr/vtysh.conf
+        - configs/rr1/frr.conf:/etc/frr/frr.conf
+
+    rr2:
+      image: quay.io/frrouting/frr:10.2.5
+      mgmt-ipv4: 172.31.90.22
+      binds:
+        - configs/daemons:/etc/frr/daemons
+        - configs/vtysh.conf:/etc/frr/vtysh.conf
+        - configs/rr2/frr.conf:/etc/frr/frr.conf
+
+    ext1:
+      image: quay.io/frrouting/frr:10.2.5
+      mgmt-ipv4: 172.31.90.31
+      binds:
+        - configs/daemons:/etc/frr/daemons
+        - configs/vtysh.conf:/etc/frr/vtysh.conf
+        - configs/ext1/frr.conf:/etc/frr/frr.conf
+
+    ext2:
+      image: quay.io/frrouting/frr:10.2.5
+      mgmt-ipv4: 172.31.90.32
+      binds:
+        - configs/daemons:/etc/frr/daemons
+        - configs/vtysh.conf:/etc/frr/vtysh.conf
+        - configs/ext2/frr.conf:/etc/frr/frr.conf
+
+  links:
+    - endpoints: ["rr1:eth1", "ext1:eth1"]
+    - endpoints: ["rr1:eth2", "ext2:eth1"]
+    - endpoints: ["rr1:eth3", "rr2:eth1"]

@@ -270,7 +270,8 @@ VTYSH" > /dev/null 2>&1 ; then
   # EDGE-HIJACK-PREFIX is created by the route-map block above so seq 20 has a
   # prefix-list to reference, but at baseline it must be empty — otherwise
   # 10.10.0.0/24 gets AS65001 prepended and shows origin-invalid before any
-  # hijack scenario runs. The hijack) case re-adds the entry during injection.
+  # hijack scenario runs. It is intentionally left empty after setup: hijack)
+  # originates 192.0.2.0/24 from the internet router and never uses this list.
   sudo docker exec clab-raven-demo-upstream vtysh \
     -c "configure terminal" \
     -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
@@ -460,34 +461,7 @@ reset)
     echo "       Identify the holder with: ss -tlnp | grep -E ':(11019|11020|9595)\b'"
   fi
 
-  # Remove hijack artifacts
-  sudo docker exec clab-raven-demo-upstream vtysh \
-    -c "configure terminal" \
-    -c "no ip prefix-list EDGE-HIJACK-PREFIX permit 10.10.0.0/24" \
-    -c "end" 2>/dev/null || true
-
-  # Remove leak artifacts
-  sudo docker exec clab-raven-demo-upstream vtysh \
-    -c "configure terminal" \
-    -c "no ip prefix-list LEAK-PREFIX permit 145.102.136.0/22" \
-    -c "end" 2>/dev/null || true
-
-  # Remove internet router hijack announcement
-  sudo docker exec clab-raven-demo-internet bash -c "vtysh << 'VTYSH'
-configure terminal
-no ip route 192.0.2.0/24 blackhole
-router bgp 64496
-address-family ipv4 unicast
-no network 192.0.2.0/24
-exit-address-family
-end
-VTYSH" > /dev/null 2>&1 || true
-
-  # Soft reset all BGP sessions to propagate cleanup
-  sudo docker exec clab-raven-demo-upstream vtysh \
-    -c "clear ip bgp * soft" 2>/dev/null || true
-  sudo docker exec clab-raven-demo-internet vtysh \
-    -c "clear ip bgp * soft" 2>/dev/null || true
+  warn "reset does not withdraw injected hijacks/leaks — run hijack-clean / leak-clean first if a scenario is live."
 
   echo ""
   echo "  Next: ./demo-master.sh setup"
@@ -606,6 +580,11 @@ VTYSH" > /dev/null 2>&1
 # ── ROUTE LEAK ───────────────────────────────────────────────────────────────
 leak)
   header "Attack Scenario 2 — Route Leak (ASPA)"
+
+  # Ensure LEAK-PREFIX exists (reset no longer owns it); keeps leak self-healing whatever state the router is in.
+  sudo docker exec clab-raven-demo-upstream vtysh -c "configure terminal" \
+    -c "ip prefix-list LEAK-PREFIX seq 5 permit 145.102.136.0/22" -c "end" \
+    > /dev/null 2>&1 || true
 
   echo "  Prefix:         145.102.136.0/22"
   echo "  Origin:         AS1199  (SURFnet — has valid ROA)"
